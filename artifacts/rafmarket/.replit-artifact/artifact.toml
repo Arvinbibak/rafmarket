@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "RAFMARKET"
+version = "1.0.0"
+id = "artifacts/rafmarket"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25898
+
+[services.development]
+run = "pnpm --filter @workspace/rafmarket run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/rafmarket", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/rafmarket/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25898"
+BASE_PATH = "/"
