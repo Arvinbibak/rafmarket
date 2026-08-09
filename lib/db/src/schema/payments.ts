@@ -13,71 +13,93 @@ import { z } from "zod/v4";
 import { usersTable } from "./users";
 import { ordersTable } from "./orders";
 
-export const paymentsTable = pgTable("payments", {
-  id: serial("id").primaryKey(),
+export const paymentsTable = pgTable(
+  "payments",
+  {
+    id: serial("id").primaryKey(),
 
-  orderId: integer("order_id")
-    .notNull()
-    .references(() => ordersTable.id),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => ordersTable.id),
 
-  userId: integer("user_id")
-    .notNull()
-    .references(() => usersTable.id),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => usersTable.id),
 
-  method: text("method").notNull(),
+    method: text("method")
+      .notNull()
+      .default("pi"),
 
-  status: text("status")
-    .notNull()
-    .default("pending"),
+    status: text("status")
+      .notNull()
+      .default("pending"),
 
-  amount: numeric("amount", {
-    precision: 18,
-    scale: 6,
-  }).notNull(),
+    amount: numeric("amount", {
+      precision: 18,
+      scale: 6,
+    }).notNull(),
 
-  currency: text("currency")
-    .notNull(),
+    currency: text("currency")
+      .notNull()
+      .default("Pi"),
 
-  provider: text("provider"),
+    provider: text("provider"),
 
-  providerPaymentId: text(
-    "provider_payment_id",
-  ),
+    providerPaymentId: text(
+      "provider_payment_id",
+    ),
 
-  providerReference: text(
-    "provider_reference",
-  ),
+    providerReference: text(
+      "provider_reference",
+    ),
 
-  gatewayUrl: text("gateway_url"),
+    gatewayUrl: text(
+      "gateway_url",
+    ),
 
-  createdAt: timestamp("created_at", {
-    withTimezone: true,
-  })
-    .notNull()
-    .defaultNow(),
+    createdAt: timestamp(
+      "created_at",
+      {
+        withTimezone: true,
+      },
+    )
+      .notNull()
+      .defaultNow(),
 
-  updatedAt: timestamp("updated_at", {
-    withTimezone: true,
-  })
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
+    updatedAt: timestamp(
+      "updated_at",
+      {
+        withTimezone: true,
+      },
+    )
+      .notNull()
+      .defaultNow()
+      .$onUpdate(
+        () => new Date(),
+      ),
 
-  paidAt: timestamp("paid_at", {
-    withTimezone: true,
-  }),
-});
+    paidAt: timestamp(
+      "paid_at",
+      {
+        withTimezone: true,
+      },
+    ),
+  },
+);
 
 export const insertPaymentSchema =
-  createInsertSchema(paymentsTable).omit({
+  createInsertSchema(
+    paymentsTable,
+  ).omit({
     id: true,
     createdAt: true,
     updatedAt: true,
   });
 
-export type InsertPayment = z.infer<
-  typeof insertPaymentSchema
->;
+export type InsertPayment =
+  z.infer<
+    typeof insertPaymentSchema
+  >;
 
 export type Payment =
   typeof paymentsTable.$inferSelect;
