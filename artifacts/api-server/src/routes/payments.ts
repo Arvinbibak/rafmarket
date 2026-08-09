@@ -7,7 +7,6 @@ import {
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth";
 import { logger } from "../lib/logger";
-import { createIrrPayment } from "../lib/gateway";
 
 const router: IRouter = Router();
 
@@ -15,37 +14,8 @@ type PaymentMethod = "pi" | "irr";
 
 const PI_API_BASE = "https://api.minepi.com/v2";
 
-const ZARINPAL_VERIFY_URL =
-  "https://payment.zarinpal.com/pg/v4/payment/verify.json";
-
-const ZARINPAL_START_URL =
-  "https://www.zarinpal.com/pg/StartPay";
-
-const IRR_MERCHANT_ID =
-  process.env.IRR_MERCHANT_ID || "";
-
-function parseId(value: unknown): number | null {
-  const id = Number(value);
-
-  if (!Number.isInteger(id) || id <= 0) {
-    return null;
-  }
-
-  return id;
-}
-
-function parsePositiveAmount(value: unknown): number | null {
-  const amount = Number(value);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null;
-  }
-
-  return amount;
-}
-
 function getPiHeaders(): Record<string, string> {
-  const apiKey = process.env.PI_API_KEY;
+  const apiKey = process.env["PI_API_KEY"];
 
   if (!apiKey) {
     throw new Error("PI_API_KEY is not configured");
@@ -57,49 +27,19 @@ function getPiHeaders(): Record<string, string> {
   };
 }
 
-async function getUserOrder(
-  orderId: number,
-  userId: number,
-) {
-  const [order] = await db
-    .select()
-    .from(ordersTable)
-    .where(
-      and(
-        eq(ordersTable.id, orderId),
-        eq(ordersTable.userId, userId),
-      ),
-    );
-
-  return order;
+function isValidPositiveNumber(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0
+  );
 }
 
-async function getPayment(
-  paymentId: number,
-  userId: number,
-) {
-  const [payment] = await db
-    .select()
-    .from(paymentsTable)
-    .where(
-      and(
-        eq(paymentsTable.id, paymentId),
-        eq(paymentsTable.userId, userId),
-      ),
-    );
-
-  return payment;
-}
-
-/* =========================================================
-   POST /payments
-
-   Creates a payment record.
-   Supported methods:
-   - pi
-   - irr
-   ========================================================= */
-
+/**
+ * POST /payments
+ *
+ * Creates an internal payment record for an order.
+ */
 router.post(
   "/payments",
   requireAuth,
@@ -112,15 +52,15 @@ router.post(
       method?: unknown;
     };
 
-    const parsedOrderId = parseId(orderId);
-
     if (
-      !parsedOrderId ||
-      typeof method !== "string" ||
-      !["pi", "irr"].includes(method)
+      !Number.isInteger(orderId) ||
+      !["pi", "irr"].includes(
+        method as string,
+      )
     ) {
       res.status(400).json({
-        error: "orderId and valid payment method are required",
+        error:
+          "orderId and valid payment method are required",
         allowedMethods: ["pi", "irr"],
       });
       return;
@@ -129,10 +69,21 @@ router.post(
     const paymentMethod =
       method as PaymentMethod;
 
-    const order = await getUserOrder(
-      parsedOrderId,
-      req.user!.id,
-    );
+    const [order] = await db
+      .select()
+      .from(ordersTable)
+      .where(
+        and(
+          eq(
+            ordersTable.id,
+            orderId as number,
+          ),
+          eq(
+            ordersTable.userId,
+            req.user!.id,
+          ),
+        ),
+      );
 
     if (!order) {
       res.status(404).json({
@@ -143,31 +94,22 @@ router.post(
 
     if (order.status !== "pending") {
       res.status(409).json({
-        error: "Order is not available for payment",
+        error:
+          "Order is not available for payment",
         status: order.status,
       });
       return;
     }
 
-    const expectedCurrency =
+    const currency =
       paymentMethod === "pi"
         ? "Pi"
         : "IRR";
 
-    if (order.currency !== expectedCurrency) {
-      res.status(409).json({
-        error:
-          "Payment currency does not match order currency",
-        orderCurrency: order.currency,
-        requestedCurrency: expectedCurrency,
-      });
-      return;
-    }
-
     const provider =
       paymentMethod === "pi"
         ? "pi"
-        : "zarinpal";
+        : null;
 
     const [existingPayment] =
       await db
@@ -177,7 +119,7 @@ router.post(
           and(
             eq(
               paymentsTable.orderId,
-              parsedOrderId,
+              order.id,
             ),
             eq(
               paymentsTable.userId,
@@ -206,19 +148,20 @@ router.post(
       await db
         .insert(paymentsTable)
         .values({
-          orderId: parsedOrderId,
+          orderId: order.id,
           userId: req.user!.id,
           method: paymentMethod,
           status: "pending",
           amount: order.total,
-          currency: expectedCurrency,
+          currency,
           provider,
         })
         .returning();
 
     if (!payment) {
       res.status(500).json({
-        error: "Unable to create payment",
+        error:
+          "Failed to create payment",
       });
       return;
     }
@@ -227,534 +170,26 @@ router.post(
       success: true,
       payment,
       amount: Number(order.total),
-      currency: expectedCurrency,
-      method: paymentMethod,
+      currency,
     });
   },
 );
 
-/* =========================================================
-   POST /payments/irr/initiate
-
-   Creates a ZarinPal payment and returns gateway URL.
-   ========================================================= */
-
-router.post(
-  "/payments/irr/initiate",
-  requireAuth,
-  async (req, res): Promise<void> => {
-    const {
-      orderId,
-    } = req.body as {
-      orderId?: unknown;
-    };
-
-    const parsedOrderId =
-      parseId(orderId);
-
-    if (!parsedOrderId) {
-      res.status(400).json({
-        error: "Valid orderId is required",
-      });
-      return;
-    }
-
-    const order = await getUserOrder(
-      parsedOrderId,
-      req.user!.id,
-    );
-
-    if (!order) {
-      res.status(404).json({
-        error: "Order not found",
-      });
-      return;
-    }
-
-    if (order.status !== "pending") {
-      res.status(409).json({
-        error:
-          "Order is not available for payment",
-        status: order.status,
-      });
-      return;
-    }
-
-    if (order.currency !== "IRR") {
-      res.status(409).json({
-        error:
-          "This order is not an Iranian Rial order",
-        orderCurrency: order.currency,
-      });
-      return;
-    }
-
-    const amount = Number(order.total);
-
-    if (
-      !Number.isFinite(amount) ||
-      !Number.isInteger(amount) ||
-      amount <= 0
-    ) {
-      res.status(409).json({
-        error:
-          "Invalid Iranian Rial order amount",
-      });
-      return;
-    }
-
-    let payment;
-
-    const [existingPayment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.orderId,
-              order.id,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-            eq(
-              paymentsTable.method,
-              "irr",
-            ),
-          ),
-        );
-
-    if (existingPayment) {
-      payment = existingPayment;
-    } else {
-      [payment] =
-        await db
-          .insert(paymentsTable)
-          .values({
-            orderId: order.id,
-            userId: req.user!.id,
-            method: "irr",
-            status: "pending",
-            amount: order.total,
-            currency: "IRR",
-            provider: "zarinpal",
-          })
-          .returning();
-    }
-
-    if (!payment) {
-      res.status(500).json({
-        error: "Unable to create payment",
-      });
-      return;
-    }
-
-    if (
-      payment.status === "paid"
-    ) {
-      res.status(409).json({
-        error:
-          "Payment has already been completed",
-      });
-      return;
-    }
-
-    if (
-      payment.gatewayUrl &&
-      payment.providerReference
-    ) {
-      res.json({
-        success: true,
-        status: payment.status,
-        paymentId: payment.id,
-        orderId: order.id,
-        amount,
-        currency: "IRR",
-        authority:
-          payment.providerReference,
-        paymentUrl:
-          payment.gatewayUrl,
-      });
-      return;
-    }
-
-    const result =
-      await createIrrPayment(
-        amount,
-        `RafMarket order #${order.id}`,
-        {
-          orderId: order.id,
-        },
-      );
-
-    if (
-      !result.success ||
-      !result.authority
-    ) {
-      res.status(502).json({
-        error:
-          result.message ||
-          "Unable to create Iranian payment",
-      });
-      return;
-    }
-
-    const paymentUrl =
-      result.paymentUrl ||
-      `${ZARINPAL_START_URL}/${result.authority}`;
-
-    const [updatedPayment] =
-      await db
-        .update(paymentsTable)
-        .set({
-          provider: "zarinpal",
-          providerReference:
-            result.authority,
-          gatewayUrl: paymentUrl,
-          status: "processing",
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        )
-        .returning();
-
-    req.log.info(
-      {
-        paymentId: payment.id,
-        orderId: order.id,
-        amount,
-      },
-      "Iranian payment initiated",
-    );
-
-    res.json({
-      success: true,
-      status: "processing",
-      paymentId:
-        updatedPayment?.id ??
-        payment.id,
-      orderId: order.id,
-      amount,
-      currency: "IRR",
-      authority:
-        result.authority,
-      paymentUrl,
-    });
-  },
-);
-
-/* =========================================================
-   GET /payments/irr/callback
-
-   ZarinPal callback.
-
-   IMPORTANT:
-   Payment is considered successful ONLY after
-   server-side verification with ZarinPal.
-   ========================================================= */
-
-router.get(
-  "/payments/irr/callback",
-  async (req, res): Promise<void> => {
-    const authority =
-      typeof req.query.Authority ===
-      "string"
-        ? req.query.Authority
-        : "";
-
-    const status =
-      typeof req.query.Status ===
-      "string"
-        ? req.query.Status
-        : "";
-
-    if (!authority) {
-      res.status(400).json({
-        error:
-          "Payment authority is missing",
-      });
-      return;
-    }
-
-    const [payment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          eq(
-            paymentsTable.providerReference,
-            authority,
-          ),
-        );
-
-    if (!payment) {
-      res.status(404).json({
-        error: "Payment not found",
-      });
-      return;
-    }
-
-    if (payment.method !== "irr") {
-      res.status(400).json({
-        error:
-          "Invalid payment method",
-      });
-      return;
-    }
-
-    if (payment.status === "paid") {
-      res.json({
-        success: true,
-        status: "paid",
-        paymentId: payment.id,
-        orderId: payment.orderId,
-        message:
-          "Payment was already verified",
-      });
-      return;
-    }
-
-    if (
-      status.toLowerCase() !== "ok"
-    ) {
-      await db
-        .update(paymentsTable)
-        .set({
-          status: "cancelled",
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        );
-
-      res.json({
-        success: false,
-        status: "cancelled",
-        paymentId: payment.id,
-        orderId: payment.orderId,
-        message:
-          "Iranian payment was cancelled",
-      });
-      return;
-    }
-
-    if (!IRR_MERCHANT_ID) {
-      logger.error(
-        "IRR_MERCHANT_ID is not configured",
-      );
-
-      res.status(500).json({
-        error:
-          "Iranian payment gateway is not configured",
-      });
-      return;
-    }
-
-    const amount =
-      Number(payment.amount);
-
-    if (
-      !Number.isFinite(amount) ||
-      !Number.isInteger(amount) ||
-      amount <= 0
-    ) {
-      res.status(500).json({
-        error:
-          "Invalid payment amount",
-      });
-      return;
-    }
-
-    try {
-      const verifyResponse =
-        await fetch(
-          ZARINPAL_VERIFY_URL,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
-              Accept:
-                "application/json",
-            },
-            body: JSON.stringify({
-              merchant_id:
-                IRR_MERCHANT_ID,
-              amount,
-              authority,
-            }),
-          },
-        );
-
-      const verifyData =
-        (await verifyResponse.json()) as {
-          data?: {
-            code?: number;
-            message?: string;
-            ref_id?: number;
-            card_pan?: string;
-          };
-          errors?: unknown;
-        };
-
-      if (!verifyResponse.ok) {
-        logger.error(
-          {
-            status:
-              verifyResponse.status,
-            paymentId: payment.id,
-          },
-          "ZarinPal verification request failed",
-        );
-
-        res.status(502).json({
-          error:
-            "Iranian payment verification failed",
-        });
-        return;
-      }
-
-      const code =
-        verifyData.data?.code;
-
-      if (
-        code !== 100 &&
-        code !== 101
-      ) {
-        await db
-          .update(paymentsTable)
-          .set({
-            status: "failed",
-          })
-          .where(
-            eq(
-              paymentsTable.id,
-              payment.id,
-            ),
-          );
-
-        res.status(409).json({
-          success: false,
-          status: "failed",
-          paymentId: payment.id,
-          orderId: payment.orderId,
-          gatewayCode:
-            code ?? null,
-          message:
-            verifyData.data?.message ||
-            "Iranian payment could not be verified",
-        });
-        return;
-      }
-
-      const refId =
-        verifyData.data?.ref_id;
-
-      const [updatedPayment] =
-        await db
-          .update(paymentsTable)
-          .set({
-            status: "paid",
-            provider: "zarinpal",
-            providerReference:
-              authority,
-            paidAt: new Date(),
-          })
-          .where(
-            eq(
-              paymentsTable.id,
-              payment.id,
-            ),
-          )
-          .returning();
-
-      if (
-        !updatedPayment
-      ) {
-        res.status(500).json({
-          error:
-            "Unable to update payment",
-        });
-        return;
-      }
-
-      await db
-        .update(ordersTable)
-        .set({
-          status: "paid",
-        })
-        .where(
-          and(
-            eq(
-              ordersTable.id,
-              payment.orderId,
-            ),
-            eq(
-              ordersTable.userId,
-              payment.userId,
-            ),
-            eq(
-              ordersTable.status,
-              "pending",
-            ),
-          ),
-        );
-
-      logger.info(
-        {
-          paymentId:
-            payment.id,
-          orderId:
-            payment.orderId,
-          authority,
-          refId,
-        },
-        "Iranian payment verified successfully",
-      );
-
-      res.json({
-        success: true,
-        status: "paid",
-        paymentId:
-          payment.id,
-        orderId:
-          payment.orderId,
-        authority,
-        refId:
-          refId ?? null,
-        message:
-          "Iranian payment verified successfully",
-      });
-    } catch (error) {
-      logger.error(
-        {
-          error,
-          paymentId:
-            payment.id,
-          authority,
-        },
-        "Iranian payment verification failed",
-      );
-
-      res.status(502).json({
-        error:
-          "Unable to verify Iranian payment",
-      });
-    }
-  },
-);
-
-/* =========================================================
-   POST /payments/pi/initiate
-   ========================================================= */
-
+/**
+ * POST /payments/pi/initiate
+ *
+ * Called by Pi SDK:
+ *
+ * onReadyForServerApproval(paymentId)
+ *
+ * The paymentId received from the Pi SDK is the Pi payment identifier.
+ *
+ * This endpoint:
+ * 1. Validates the order.
+ * 2. Creates/finds our internal payment.
+ * 3. Stores the Pi payment identifier.
+ * 4. Approves the payment through Pi API.
+ */
 router.post(
   "/payments/pi/initiate",
   requireAuth,
@@ -762,56 +197,48 @@ router.post(
     const {
       orderId,
       amount,
+      paymentId,
     } = req.body as {
       orderId?: unknown;
       amount?: unknown;
+      paymentId?: unknown;
     };
 
-    const parsedOrderId =
-      parseId(orderId);
-
-    const parsedAmount =
-      parsePositiveAmount(amount);
-
     if (
-      !parsedOrderId ||
-      parsedAmount === null
+      !Number.isInteger(orderId) ||
+      !isValidPositiveNumber(amount) ||
+      typeof paymentId !== "string" ||
+      !paymentId.trim()
     ) {
       res.status(400).json({
         error:
-          "Valid orderId and amount are required",
+          "Valid orderId, amount and paymentId are required",
       });
       return;
     }
 
-    const order =
-      await getUserOrder(
-        parsedOrderId,
-        req.user!.id,
+    const piPaymentId =
+      paymentId.trim();
+
+    const [order] = await db
+      .select()
+      .from(ordersTable)
+      .where(
+        and(
+          eq(
+            ordersTable.id,
+            orderId as number,
+          ),
+          eq(
+            ordersTable.userId,
+            req.user!.id,
+          ),
+        ),
       );
 
     if (!order) {
       res.status(404).json({
         error: "Order not found",
-      });
-      return;
-    }
-
-    if (order.currency !== "Pi") {
-      res.status(409).json({
-        error:
-          "This order is not a Pi order",
-        orderCurrency:
-          order.currency,
-      });
-      return;
-    }
-
-    if (order.status !== "pending") {
-      res.status(409).json({
-        error:
-          "Order is not available for payment",
-        status: order.status,
       });
       return;
     }
@@ -820,21 +247,45 @@ router.post(
       Number(order.total);
 
     if (
-      !Number.isFinite(
-        orderAmount,
-      ) ||
-      parsedAmount !==
-        orderAmount
+      !Number.isFinite(orderAmount) ||
+      orderAmount <= 0
     ) {
-      res.status(400).json({
+      res.status(409).json({
         error:
-          "Payment amount does not match order total",
+          "Order has an invalid total",
       });
       return;
     }
 
-    let payment;
+    if (
+      Math.abs(
+        amount - orderAmount,
+      ) > 0.000001
+    ) {
+      res.status(400).json({
+        error:
+          "Payment amount does not match order total",
+        expected: orderAmount,
+        received: amount,
+      });
+      return;
+    }
 
+    if (order.status !== "pending") {
+      res.status(409).json({
+        error:
+          "Order is not available for payment",
+        status: order.status,
+      });
+      return;
+    }
+
+    let payment:
+      | typeof paymentsTable.$inferSelect
+      | undefined;
+
+    // First try to find an existing
+    // payment for this order.
     const [existingPayment] =
       await db
         .select()
@@ -861,68 +312,181 @@ router.post(
         );
 
     if (existingPayment) {
-      payment =
-        existingPayment;
+      payment = existingPayment;
     } else {
-      [payment] =
+      const [createdPayment] =
         await db
           .insert(paymentsTable)
           .values({
             orderId: order.id,
-            userId:
-              req.user!.id,
+            userId: req.user!.id,
             method: "pi",
             status: "pending",
-            amount:
-              order.total,
+            amount: order.total,
             currency: "Pi",
             provider: "pi",
+            providerPaymentId:
+              piPaymentId,
           })
           .returning();
+
+      payment = createdPayment;
     }
 
     if (!payment) {
       res.status(500).json({
         error:
-          "Unable to create Pi payment",
+          "Failed to create payment record",
       });
       return;
+    }
+
+    // Store the Pi payment ID.
+    if (
+      payment.providerPaymentId !==
+      piPaymentId
+    ) {
+      const [updatedPayment] =
+        await db
+          .update(paymentsTable)
+          .set({
+            providerPaymentId:
+              piPaymentId,
+          })
+          .where(
+            eq(
+              paymentsTable.id,
+              payment.id,
+            ),
+          )
+          .returning();
+
+      if (updatedPayment) {
+        payment = updatedPayment;
+      }
     }
 
     req.log.info(
       {
         orderId: order.id,
-        paymentId:
-          payment.id,
-        amount:
-          orderAmount,
+        paymentId: payment.id,
+        piPaymentId,
+        amount,
       },
-      "Pi payment initiated",
+      "Pi payment approval started",
     );
 
-    res.json({
-      success: true,
-      status: "initiated",
-      paymentId:
-        payment.id,
-      piPaymentId:
-        payment.providerPaymentId,
-      txid: null,
-      orderId:
-        order.id,
-      amount:
-        orderAmount,
-      currency: "Pi",
-      message:
-        "Pi payment initiated",
-    });
+    try {
+      /**
+       * Server-side Pi approval.
+       *
+       * Official Pi flow requires the server
+       * to approve the payment before the
+       * Pioneer can submit the transaction.
+       */
+      const approveResponse =
+        await fetch(
+          `${PI_API_BASE}/payments/${encodeURIComponent(
+            piPaymentId,
+          )}/approve`,
+          {
+            method: "POST",
+            headers: getPiHeaders(),
+          },
+        );
+
+      const approveText =
+        await approveResponse.text();
+
+      let approveData: unknown =
+        null;
+
+      try {
+        approveData =
+          approveText
+            ? JSON.parse(
+                approveText,
+              )
+            : null;
+      } catch {
+        approveData =
+          approveText;
+      }
+
+      if (!approveResponse.ok) {
+        logger.warn(
+          {
+            status:
+              approveResponse.status,
+            piPaymentId,
+            approveData,
+          },
+          "Pi payment approval failed",
+        );
+
+        res.status(502).json({
+          error:
+            "Pi payment approval failed",
+          paymentId: payment.id,
+          piPaymentId,
+        });
+        return;
+      }
+
+      await db
+        .update(paymentsTable)
+        .set({
+          status: "processing",
+          providerPaymentId:
+            piPaymentId,
+        })
+        .where(
+          eq(
+            paymentsTable.id,
+            payment.id,
+          ),
+        );
+
+      res.json({
+        success: true,
+        status: "approved",
+        paymentId:
+          payment.id,
+        piPaymentId,
+        orderId: order.id,
+        amount: orderAmount,
+        currency: "Pi",
+        data: approveData,
+        message:
+          "Pi payment approved",
+      });
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          paymentId:
+            payment.id,
+          piPaymentId,
+        },
+        "Pi payment approval request failed",
+      );
+
+      res.status(502).json({
+        error:
+          "Unable to connect to Pi Network",
+      });
+    }
   },
 );
 
-/* =========================================================
-   POST /payments/pi/approve
-   ========================================================= */
-
+/**
+ * POST /payments/pi/approve
+ *
+ * Optional explicit approval endpoint.
+ *
+ * This is kept for compatibility with
+ * existing frontend/API clients.
+ */
 router.post(
   "/payments/pi/approve",
   requireAuth,
@@ -937,20 +501,8 @@ router.post(
       piPaymentId?: unknown;
     };
 
-    const parsedPaymentId =
-      parseId(paymentId);
-
-    const parsedOrderId =
-      orderId == null
-        ? null
-        : parseId(orderId);
-
     if (
-      !parsedPaymentId ||
-      (
-        orderId != null &&
-        !parsedOrderId
-      ) ||
+      !Number.isInteger(paymentId) ||
       typeof piPaymentId !==
         "string" ||
       !piPaymentId.trim()
@@ -962,11 +514,22 @@ router.post(
       return;
     }
 
-    const payment =
-      await getPayment(
-        parsedPaymentId,
-        req.user!.id,
-      );
+    const [payment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.id,
+              paymentId as number,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
 
     if (!payment) {
       res.status(404).json({
@@ -985,9 +548,9 @@ router.post(
     }
 
     if (
-      parsedOrderId &&
+      orderId != null &&
       payment.orderId !==
-        parsedOrderId
+        orderId
     ) {
       res.status(400).json({
         error:
@@ -996,76 +559,42 @@ router.post(
       return;
     }
 
-    const order =
-      await getUserOrder(
-        payment.orderId,
-        req.user!.id,
-      );
-
-    if (!order) {
-      res.status(404).json({
-        error:
-          "Order not found",
-      });
-      return;
-    }
-
-    if (
-      order.status !==
-      "pending"
-    ) {
-      res.status(409).json({
-        error:
-          "Order is not available for payment",
-        status:
-          order.status,
-      });
-      return;
-    }
-
-    const paymentAmount =
-      Number(payment.amount);
-
-    if (
-      !Number.isFinite(
-        paymentAmount,
-      ) ||
-      paymentAmount !==
-        Number(order.total)
-    ) {
-      res.status(409).json({
-        error:
-          "Payment amount does not match order",
-      });
-      return;
-    }
+    const cleanPiPaymentId =
+      piPaymentId.trim();
 
     try {
       const response =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId.trim(),
+            cleanPiPaymentId,
           )}/approve`,
           {
             method: "POST",
-            headers:
-              getPiHeaders(),
+            headers: getPiHeaders(),
           },
         );
 
-      const data =
-        (await response.json()) as Record<
-          string,
-          unknown
-        >;
+      const text =
+        await response.text();
+
+      let data: unknown = null;
+
+      try {
+        data = text
+          ? JSON.parse(text)
+          : null;
+      } catch {
+        data = text;
+      }
 
       if (!response.ok) {
         logger.warn(
           {
             status:
               response.status,
-            paymentId:
-              payment.id,
+            piPaymentId:
+              cleanPiPaymentId,
+            data,
           },
           "Pi payment approval failed",
         );
@@ -1081,39 +610,31 @@ router.post(
         .update(paymentsTable)
         .set({
           providerPaymentId:
-            piPaymentId.trim(),
-          status:
-            "processing",
+            cleanPiPaymentId,
+          status: "processing",
         })
         .where(
-          and(
-            eq(
-              paymentsTable.id,
-              payment.id,
-            ),
-            eq(
-              paymentsTable.status,
-              "pending",
-            ),
+          eq(
+            paymentsTable.id,
+            payment.id,
           ),
         );
 
       res.json({
         success: true,
-        status:
-          "approved",
+        status: "approved",
         paymentId:
           payment.id,
         piPaymentId:
-          piPaymentId.trim(),
+          cleanPiPaymentId,
         data,
       });
-    } catch (error) {
+    } catch (err) {
       logger.error(
         {
-          error,
-          paymentId:
-            payment.id,
+          err,
+          piPaymentId:
+            cleanPiPaymentId,
         },
         "Pi payment approval request failed",
       );
@@ -1126,15 +647,16 @@ router.post(
   },
 );
 
-/* =========================================================
-   POST /payments/pi/complete
-
-   IMPORTANT:
-   The client-provided txid is NOT trusted.
-   The server verifies the payment with Pi API
-   before marking the order as paid.
-   ========================================================= */
-
+/**
+ * POST /payments/pi/complete
+ *
+ * Called by:
+ *
+ * onReadyForServerCompletion(paymentId, txid)
+ *
+ * The paymentId here is the Pi payment identifier
+ * returned by the Pi SDK.
+ */
 router.post(
   "/payments/pi/complete",
   requireAuth,
@@ -1143,36 +665,115 @@ router.post(
       paymentId,
       piPaymentId,
       txid,
+      orderId,
     } = req.body as {
       paymentId?: unknown;
       piPaymentId?: unknown;
       txid?: unknown;
+      orderId?: unknown;
     };
 
-    const parsedPaymentId =
-      parseId(paymentId);
+    /*
+     * Current Cart.tsx sends:
+     *
+     * {
+     *   paymentId,
+     *   txid,
+     *   orderId
+     * }
+     *
+     * where paymentId is the Pi payment ID.
+     *
+     * We also accept piPaymentId for
+     * compatibility with older clients.
+     */
+    const sdkPaymentId =
+      typeof paymentId === "string"
+        ? paymentId.trim()
+        : typeof piPaymentId ===
+              "string"
+          ? piPaymentId.trim()
+          : "";
 
     if (
-      !parsedPaymentId ||
-      typeof piPaymentId !==
-        "string" ||
-      !piPaymentId.trim() ||
-      typeof txid !==
-        "string" ||
+      !sdkPaymentId ||
+      typeof txid !== "string" ||
       !txid.trim()
     ) {
       res.status(400).json({
         error:
-          "paymentId, piPaymentId and txid are required",
+          "paymentId and txid are required",
       });
       return;
     }
 
-    const payment =
-      await getPayment(
-        parsedPaymentId,
-        req.user!.id,
-      );
+    const cleanTxid =
+      txid.trim();
+
+    /*
+     * Find our local payment record
+     * using the Pi payment identifier.
+     */
+    let payment:
+      | typeof paymentsTable.$inferSelect
+      | undefined;
+
+    const [byProviderId] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.providerPaymentId,
+              sdkPaymentId,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
+
+    payment =
+      byProviderId;
+
+    /*
+     * Backward compatibility:
+     * if paymentId was sent as a numeric
+     * local database ID.
+     */
+    if (!payment) {
+      const numericId =
+        Number(sdkPaymentId);
+
+      if (
+        Number.isInteger(
+          numericId,
+        ) &&
+        numericId > 0
+      ) {
+        const [byLocalId] =
+          await db
+            .select()
+            .from(paymentsTable)
+            .where(
+              and(
+                eq(
+                  paymentsTable.id,
+                  numericId,
+                ),
+                eq(
+                  paymentsTable.userId,
+                  req.user!.id,
+                ),
+              ),
+            );
+
+        payment =
+          byLocalId;
+      }
+    }
 
     if (!payment) {
       res.status(404).json({
@@ -1191,27 +792,36 @@ router.post(
     }
 
     if (
-      payment.status ===
-      "paid"
+      orderId != null &&
+      (!Number.isInteger(
+        orderId,
+      ) ||
+        payment.orderId !==
+          orderId)
     ) {
-      res.json({
-        success: true,
-        status: "paid",
-        paymentId:
-          payment.id,
-        orderId:
-          payment.orderId,
-        message:
-          "Payment already completed",
+      res.status(400).json({
+        error:
+          "Payment does not belong to this order",
       });
       return;
     }
 
-    const order =
-      await getUserOrder(
-        payment.orderId,
-        req.user!.id,
-      );
+    const [order] =
+      await db
+        .select()
+        .from(ordersTable)
+        .where(
+          and(
+            eq(
+              ordersTable.id,
+              payment.orderId,
+            ),
+            eq(
+              ordersTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
 
     if (!order) {
       res.status(404).json({
@@ -1221,72 +831,93 @@ router.post(
       return;
     }
 
+    /*
+     * If this payment has already been
+     * completed, return success instead
+     * of trying to complete it twice.
+     */
     if (
-      order.status !==
-      "pending"
+      payment.status === "paid" &&
+      order.status === "paid"
     ) {
-      res.status(409).json({
-        error:
-          "Order is not available for payment",
-        status:
-          order.status,
-      });
-      return;
-    }
-
-    const expectedAmount =
-      Number(order.total);
-
-    if (
-      !Number.isFinite(
-        expectedAmount,
-      ) ||
-      expectedAmount <= 0
-    ) {
-      res.status(409).json({
-        error:
-          "Invalid order amount",
+      res.json({
+        success: true,
+        status: "paid",
+        paymentId:
+          payment.id,
+        piPaymentId:
+          payment.providerPaymentId,
+        txid:
+          payment.providerReference ??
+          cleanTxid,
+        orderId:
+          order.id,
+        message:
+          "Payment was already completed",
       });
       return;
     }
 
     try {
+      /**
+       * Step 1:
+       * Retrieve the payment directly
+       * from Pi and verify it.
+       */
       const verifyResponse =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId.trim(),
+            sdkPaymentId,
           )}`,
           {
-            headers:
-              getPiHeaders(),
+            method: "GET",
+            headers: getPiHeaders(),
           },
         );
 
-      const paymentData =
-        (await verifyResponse.json()) as {
-          identifier?: string;
-          amount?: number;
-          memo?: string;
-          metadata?: unknown;
-          status?: {
-            developer_approved?: boolean;
-            transaction_verified?: boolean;
-            developer_completed?: boolean;
-            cancelled?: boolean;
-            user_cancelled?: boolean;
-          };
-          transaction?: {
-            txid?: string;
-          };
-        };
+      const verifyText =
+        await verifyResponse.text();
+
+      let paymentData:
+        | {
+            identifier?: string;
+            amount?: number;
+            memo?: string;
+            metadata?: unknown;
+            status?: {
+              developer_approved?: boolean;
+              transaction_verified?: boolean;
+              developer_completed?: boolean;
+              cancelled?: boolean;
+              user_cancelled?: boolean;
+            };
+            transaction?: {
+              txid?: string;
+              verified?: boolean;
+            };
+          }
+        | null = null;
+
+      try {
+        paymentData =
+          verifyText
+            ? (JSON.parse(
+                verifyText,
+              ) as typeof paymentData)
+            : null;
+      } catch {
+        paymentData = null;
+      }
 
       if (!verifyResponse.ok) {
         logger.warn(
           {
             status:
               verifyResponse.status,
-            paymentId:
-              payment.id,
+            piPaymentId:
+              sdkPaymentId,
+            response:
+              verifyText,
           },
           "Pi payment verification failed",
         );
@@ -1298,6 +929,36 @@ router.post(
         return;
       }
 
+      if (!paymentData) {
+        res.status(502).json({
+          error:
+            "Invalid response from Pi Network",
+        });
+        return;
+      }
+
+      /**
+       * Confirm that the returned Pi payment
+       * identifier is the one we expected.
+       */
+      if (
+        paymentData.identifier &&
+        paymentData.identifier !==
+          sdkPaymentId
+      ) {
+        res.status(409).json({
+          error:
+            "Pi payment identifier does not match",
+        });
+        return;
+      }
+
+      /**
+       * Confirm payment amount.
+       */
+      const expectedAmount =
+        Number(order.total);
+
       const actualAmount =
         Number(
           paymentData.amount,
@@ -1307,34 +968,37 @@ router.post(
         !Number.isFinite(
           actualAmount,
         ) ||
-        actualAmount !==
-          expectedAmount
+        Math.abs(
+          actualAmount -
+            expectedAmount,
+        ) > 0.000001
       ) {
+        logger.warn(
+          {
+            orderId:
+              order.id,
+            expectedAmount,
+            actualAmount,
+            piPaymentId:
+              sdkPaymentId,
+          },
+          "Pi payment amount mismatch",
+        );
+
         res.status(409).json({
           error:
             "Pi payment amount does not match order",
-          expectedAmount,
-          actualAmount,
+          expected:
+            expectedAmount,
+          received:
+            actualAmount,
         });
         return;
       }
 
-      const piTransactionTxid =
-        paymentData.transaction
-          ?.txid;
-
-      if (
-        piTransactionTxid &&
-        piTransactionTxid !==
-          txid.trim()
-      ) {
-        res.status(409).json({
-          error:
-            "Transaction ID does not match Pi payment",
-        });
-        return;
-      }
-
+      /**
+       * Confirm cancellation state.
+       */
       const piStatus =
         paymentData.status;
 
@@ -1348,9 +1012,9 @@ router.post(
             status:
               "cancelled",
             providerPaymentId:
-              piPaymentId.trim(),
+              sdkPaymentId,
             providerReference:
-              txid.trim(),
+              cleanTxid,
           })
           .where(
             eq(
@@ -1366,25 +1030,73 @@ router.post(
         return;
       }
 
+      /**
+       * The transaction must be verified
+       * before we can complete the payment.
+       */
       if (
-        !piStatus?.developer_approved ||
-        !piStatus?.transaction_verified
+        !piStatus?.developer_approved
       ) {
         res.status(409).json({
           error:
-            "Pi payment has not been verified",
+            "Pi payment has not been approved by the developer",
         });
         return;
       }
 
-      /*
-       * Tell Pi that the payment is complete.
-       */
+      if (
+        !piStatus?.transaction_verified
+      ) {
+        res.status(409).json({
+          error:
+            "Pi transaction has not been verified",
+        });
+        return;
+      }
 
+      /**
+       * Confirm transaction ID.
+       */
+      const transactionTxid =
+        paymentData
+          .transaction?.txid;
+
+      if (
+        transactionTxid &&
+        transactionTxid !==
+          cleanTxid
+      ) {
+        logger.warn(
+          {
+            piPaymentId:
+              sdkPaymentId,
+            expectedTxid:
+              transactionTxid,
+            receivedTxid:
+              cleanTxid,
+          },
+          "Pi transaction ID mismatch",
+        );
+
+        res.status(409).json({
+          error:
+            "Transaction ID does not match Pi payment",
+        });
+        return;
+      }
+
+      /**
+       * Step 2:
+       * Complete the payment on Pi.
+       *
+       * IMPORTANT:
+       * We do not mark our order as paid
+       * until this API call succeeds.
+       */
       const completeResponse =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId.trim(),
+            sdkPaymentId,
           )}/complete`,
           {
             method: "POST",
@@ -1393,26 +1105,45 @@ router.post(
             body:
               JSON.stringify({
                 txid:
-                  txid.trim(),
+                  cleanTxid,
               }),
           },
         );
 
-      const completeData =
-        (await completeResponse.json()) as Record<
-          string,
-          unknown
-        >;
+      const completeText =
+        await completeResponse.text();
 
-      if (
-        !completeResponse.ok
-      ) {
+      let completeData:
+        | Record<
+            string,
+            unknown
+          >
+        | null = null;
+
+      try {
+        completeData =
+          completeText
+            ? (JSON.parse(
+                completeText,
+              ) as Record<
+                string,
+                unknown
+              >)
+            : null;
+      } catch {
+        completeData = null;
+      }
+
+      if (!completeResponse.ok) {
         logger.warn(
           {
             status:
               completeResponse.status,
-            paymentId:
-              payment.id,
+            piPaymentId:
+              sdkPaymentId,
+            completeData,
+            response:
+              completeText,
           },
           "Pi payment completion failed",
         );
@@ -1424,92 +1155,39 @@ router.post(
         return;
       }
 
-      /*
-       * Only after successful Pi completion
-       * do we mark our own payment and order
-       * as paid.
+      /**
+       * Step 3:
+       * Now and only now mark the
+       * internal payment and order as paid.
        */
-
       const paidAt =
         new Date();
 
-      const [updatedPayment] =
-        await db
-          .update(paymentsTable)
-          .set({
-            status: "paid",
-            provider: "pi",
-            providerPaymentId:
-              piPaymentId.trim(),
-            providerReference:
-              txid.trim(),
-            paidAt,
-          })
-          .where(
-            and(
-              eq(
-                paymentsTable.id,
-                payment.id,
-              ),
-              eq(
-                paymentsTable.status,
-                "processing",
-              ),
-            ),
-          )
-          .returning();
-
-      /*
-       * If another request completed the payment
-       * concurrently, return the already-paid state.
-       */
-
-      if (!updatedPayment) {
-        const [currentPayment] =
-          await db
-            .select()
-            .from(
-              paymentsTable,
-            )
-            .where(
-              eq(
-                paymentsTable.id,
-                payment.id,
-              ),
-            );
-
-        if (
-          currentPayment?.status ===
-          "paid"
-        ) {
-          res.json({
-            success: true,
-            status: "paid",
-            paymentId:
-              payment.id,
-            orderId:
-              order.id,
-            message:
-              "Payment already completed",
-          });
-          return;
-        }
-
-        res.status(409).json({
-          error:
-            "Payment state changed before completion",
-        });
-        return;
-      }
+      await db
+        .update(paymentsTable)
+        .set({
+          status: "paid",
+          providerPaymentId:
+            sdkPaymentId,
+          providerReference:
+            cleanTxid,
+          paidAt,
+        })
+        .where(
+          eq(
+            paymentsTable.id,
+            payment.id,
+          ),
+        );
 
       await db
         .update(ordersTable)
         .set({
           status: "paid",
           piPaymentId:
-            piPaymentId.trim(),
+            sdkPaymentId,
           piTxid:
-            txid.trim(),
+            cleanTxid,
         })
         .where(
           and(
@@ -1521,10 +1199,6 @@ router.post(
               ordersTable.userId,
               req.user!.id,
             ),
-            eq(
-              ordersTable.status,
-              "pending",
-            ),
           ),
         );
 
@@ -1533,13 +1207,13 @@ router.post(
           paymentId:
             payment.id,
           piPaymentId:
-            piPaymentId.trim(),
+            sdkPaymentId,
           txid:
-            txid.trim(),
+            cleanTxid,
           orderId:
             order.id,
         },
-        "Pi payment completed",
+        "Pi payment completed successfully",
       );
 
       res.json({
@@ -1548,24 +1222,24 @@ router.post(
         paymentId:
           payment.id,
         piPaymentId:
-          piPaymentId.trim(),
+          sdkPaymentId,
         txid:
-          txid.trim(),
+          cleanTxid,
         orderId:
           order.id,
-        data:
-          completeData,
         message:
           "Pi payment verified and completed",
       });
-    } catch (error) {
+    } catch (err) {
       logger.error(
         {
-          error,
+          err,
           paymentId:
             payment.id,
           piPaymentId:
-            piPaymentId.trim(),
+            sdkPaymentId,
+          orderId:
+            order.id,
         },
         "Pi payment completion failed",
       );
@@ -1578,10 +1252,15 @@ router.post(
   },
 );
 
-/* =========================================================
-   POST /payments/pi/cancel
-   ========================================================= */
-
+/**
+ * POST /payments/pi/cancel
+ *
+ * Called by:
+ *
+ * onCancel(paymentId)
+ *
+ * The paymentId from Pi SDK is the Pi payment ID.
+ */
 router.post(
   "/payments/pi/cancel",
   requireAuth,
@@ -1589,32 +1268,89 @@ router.post(
     const {
       paymentId,
       piPaymentId,
+      orderId,
     } = req.body as {
       paymentId?: unknown;
       piPaymentId?: unknown;
+      orderId?: unknown;
     };
 
-    const parsedPaymentId =
-      parseId(paymentId);
+    const cleanPiPaymentId =
+      typeof paymentId ===
+        "string"
+        ? paymentId.trim()
+        : typeof piPaymentId ===
+              "string"
+          ? piPaymentId.trim()
+          : "";
 
-    if (
-      !parsedPaymentId ||
-      typeof piPaymentId !==
-        "string" ||
-      !piPaymentId.trim()
-    ) {
+    if (!cleanPiPaymentId) {
       res.status(400).json({
         error:
-          "paymentId and piPaymentId are required",
+          "paymentId is required",
       });
       return;
     }
 
-    const payment =
-      await getPayment(
-        parsedPaymentId,
-        req.user!.id,
-      );
+    let payment:
+      | typeof paymentsTable.$inferSelect
+      | undefined;
+
+    const [byProviderId] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.providerPaymentId,
+              cleanPiPaymentId,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
+
+    payment =
+      byProviderId;
+
+    /*
+     * Backward compatibility with
+     * numeric internal payment IDs.
+     */
+    if (!payment) {
+      const numericId =
+        Number(cleanPiPaymentId);
+
+      if (
+        Number.isInteger(
+          numericId,
+        ) &&
+        numericId > 0
+      ) {
+        const [byLocalId] =
+          await db
+            .select()
+            .from(paymentsTable)
+            .where(
+              and(
+                eq(
+                  paymentsTable.id,
+                  numericId,
+                ),
+                eq(
+                  paymentsTable.userId,
+                  req.user!.id,
+                ),
+              ),
+            );
+
+        payment =
+          byLocalId;
+      }
+    }
 
     if (!payment) {
       res.status(404).json({
@@ -1633,12 +1369,16 @@ router.post(
     }
 
     if (
-      payment.status ===
-      "paid"
+      orderId != null &&
+      (!Number.isInteger(
+        orderId,
+      ) ||
+        payment.orderId !==
+          orderId)
     ) {
-      res.status(409).json({
+      res.status(400).json({
         error:
-          "Paid payment cannot be cancelled",
+          "Payment does not belong to this order",
       });
       return;
     }
@@ -1647,25 +1387,39 @@ router.post(
       const response =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId.trim(),
+            cleanPiPaymentId,
           )}/cancel`,
           {
             method: "POST",
-            headers:
-              getPiHeaders(),
+            headers: getPiHeaders(),
           },
         );
 
-      if (!response.ok) {
-        const data =
-          await response.text();
+      const text =
+        await response.text();
 
+      let data: unknown = null;
+
+      try {
+        data = text
+          ? JSON.parse(text)
+          : null;
+      } catch {
+        data = text;
+      }
+
+      /*
+       * If Pi says the payment is already
+       * cancelled, we can still synchronize
+       * our local state.
+       */
+      if (!response.ok) {
         logger.warn(
           {
             status:
               response.status,
-            paymentId:
-              payment.id,
+            piPaymentId:
+              cleanPiPaymentId,
             data,
           },
           "Pi payment cancellation failed",
@@ -1683,21 +1437,13 @@ router.post(
         .set({
           status:
             "cancelled",
-          provider:
-            "pi",
           providerPaymentId:
-            piPaymentId.trim(),
+            cleanPiPaymentId,
         })
         .where(
-          and(
-            eq(
-              paymentsTable.id,
-              payment.id,
-            ),
-            eq(
-              paymentsTable.status,
-              "pending",
-            ),
+          eq(
+            paymentsTable.id,
+            payment.id,
           ),
         );
 
@@ -1708,14 +1454,15 @@ router.post(
         paymentId:
           payment.id,
         piPaymentId:
-          piPaymentId.trim(),
+          cleanPiPaymentId,
+        data,
       });
-    } catch (error) {
+    } catch (err) {
       logger.error(
         {
-          error,
-          paymentId:
-            payment.id,
+          err,
+          piPaymentId:
+            cleanPiPaymentId,
         },
         "Pi payment cancellation failed",
       );
@@ -1728,18 +1475,28 @@ router.post(
   },
 );
 
-/* =========================================================
-   GET /payments/:id
-   ========================================================= */
-
+/**
+ * GET /payments/:id
+ *
+ * Returns an internal payment record.
+ */
 router.get(
   "/payments/:id",
   requireAuth,
   async (req, res): Promise<void> => {
-    const id =
-      parseId(req.params.id);
+    const id = parseInt(
+      Array.isArray(
+        req.params.id,
+      )
+        ? req.params.id[0]
+        : req.params.id,
+      10,
+    );
 
-    if (!id) {
+    if (
+      !Number.isInteger(id) ||
+      id <= 0
+    ) {
       res.status(400).json({
         error:
           "Invalid payment id",
@@ -1747,11 +1504,22 @@ router.get(
       return;
     }
 
-    const payment =
-      await getPayment(
-        id,
-        req.user!.id,
-      );
+    const [payment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.id,
+              id,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
 
     if (!payment) {
       res.status(404).json({
