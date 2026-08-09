@@ -24,19 +24,6 @@ const ZARINPAL_START_URL =
 const IRR_MERCHANT_ID =
   process.env.IRR_MERCHANT_ID || "";
 
-function getPiHeaders(): Record<string, string> {
-  const apiKey = process.env.PI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("PI_API_KEY is not configured");
-  }
-
-  return {
-    Authorization: `Key ${apiKey}`,
-    "Content-Type": "application/json",
-  };
-}
-
 function parseId(value: unknown): number | null {
   const id = Number(value);
 
@@ -57,9 +44,60 @@ function parsePositiveAmount(value: unknown): number | null {
   return amount;
 }
 
+function getPiHeaders(): Record<string, string> {
+  const apiKey = process.env.PI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("PI_API_KEY is not configured");
+  }
+
+  return {
+    Authorization: `Key ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+}
+
+async function getUserOrder(
+  orderId: number,
+  userId: number,
+) {
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(
+      and(
+        eq(ordersTable.id, orderId),
+        eq(ordersTable.userId, userId),
+      ),
+    );
+
+  return order;
+}
+
+async function getPayment(
+  paymentId: number,
+  userId: number,
+) {
+  const [payment] = await db
+    .select()
+    .from(paymentsTable)
+    .where(
+      and(
+        eq(paymentsTable.id, paymentId),
+        eq(paymentsTable.userId, userId),
+      ),
+    );
+
+  return payment;
+}
+
 /* =========================================================
    POST /payments
-   Create a payment record for Pi or Iranian Rial
+
+   Creates a payment record.
+   Supported methods:
+   - pi
+   - irr
    ========================================================= */
 
 router.post(
@@ -88,20 +126,13 @@ router.post(
       return;
     }
 
-    const paymentMethod = method as PaymentMethod;
+    const paymentMethod =
+      method as PaymentMethod;
 
-    const [order] = await db
-      .select()
-      .from(ordersTable)
-      .where(
-        and(
-          eq(ordersTable.id, parsedOrderId),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
-      );
+    const order = await getUserOrder(
+      parsedOrderId,
+      req.user!.id,
+    );
 
     if (!order) {
       res.status(404).json({
@@ -118,53 +149,50 @@ router.post(
       return;
     }
 
-    const currency =
+    const expectedCurrency =
       paymentMethod === "pi"
         ? "Pi"
         : "IRR";
+
+    if (order.currency !== expectedCurrency) {
+      res.status(409).json({
+        error:
+          "Payment currency does not match order currency",
+        orderCurrency: order.currency,
+        requestedCurrency: expectedCurrency,
+      });
+      return;
+    }
 
     const provider =
       paymentMethod === "pi"
         ? "pi"
         : "zarinpal";
 
-    /*
-     * Do not allow a payment currency to differ from
-     * the currency stored on the order.
-     */
-    if (order.currency !== currency) {
-      res.status(409).json({
-        error:
-          "Payment currency does not match order currency",
-        orderCurrency: order.currency,
-        requestedCurrency: currency,
-      });
-      return;
-    }
-
-    const [existingPayment] = await db
-      .select()
-      .from(paymentsTable)
-      .where(
-        and(
-          eq(
-            paymentsTable.orderId,
-            parsedOrderId,
+    const [existingPayment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.orderId,
+              parsedOrderId,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+            eq(
+              paymentsTable.method,
+              paymentMethod,
+            ),
+            eq(
+              paymentsTable.status,
+              "pending",
+            ),
           ),
-          eq(
-            paymentsTable.userId,
-            req.user!.id,
-          ),
-          eq(
-            paymentsTable.method,
-            paymentMethod,
-          ),
-          eq(
-            paymentsTable.status,
-            "pending",
-          ),
-        ),
-      );
+        );
 
     if (existingPayment) {
       res.json({
@@ -174,18 +202,19 @@ router.post(
       return;
     }
 
-    const [payment] = await db
-      .insert(paymentsTable)
-      .values({
-        orderId: parsedOrderId,
-        userId: req.user!.id,
-        method: paymentMethod,
-        status: "pending",
-        amount: order.total,
-        currency,
-        provider,
-      })
-      .returning();
+    const [payment] =
+      await db
+        .insert(paymentsTable)
+        .values({
+          orderId: parsedOrderId,
+          userId: req.user!.id,
+          method: paymentMethod,
+          status: "pending",
+          amount: order.total,
+          currency: expectedCurrency,
+          provider,
+        })
+        .returning();
 
     if (!payment) {
       res.status(500).json({
@@ -198,7 +227,7 @@ router.post(
       success: true,
       payment,
       amount: Number(order.total),
-      currency,
+      currency: expectedCurrency,
       method: paymentMethod,
     });
   },
@@ -206,7 +235,8 @@ router.post(
 
 /* =========================================================
    POST /payments/irr/initiate
-   Create Iranian Rial payment and return gateway URL
+
+   Creates a ZarinPal payment and returns gateway URL.
    ========================================================= */
 
 router.post(
@@ -219,7 +249,8 @@ router.post(
       orderId?: unknown;
     };
 
-    const parsedOrderId = parseId(orderId);
+    const parsedOrderId =
+      parseId(orderId);
 
     if (!parsedOrderId) {
       res.status(400).json({
@@ -228,21 +259,10 @@ router.post(
       return;
     }
 
-    const [order] = await db
-      .select()
-      .from(ordersTable)
-      .where(
-        and(
-          eq(
-            ordersTable.id,
-            parsedOrderId,
-          ),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
-      );
+    const order = await getUserOrder(
+      parsedOrderId,
+      req.user!.id,
+    );
 
     if (!order) {
       res.status(404).json({
@@ -285,45 +305,43 @@ router.post(
 
     let payment;
 
-    const [existingPayment] = await db
-      .select()
-      .from(paymentsTable)
-      .where(
-        and(
-          eq(
-            paymentsTable.orderId,
-            parsedOrderId,
+    const [existingPayment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.orderId,
+              order.id,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+            eq(
+              paymentsTable.method,
+              "irr",
+            ),
           ),
-          eq(
-            paymentsTable.userId,
-            req.user!.id,
-          ),
-          eq(
-            paymentsTable.method,
-            "irr",
-          ),
-          eq(
-            paymentsTable.status,
-            "pending",
-          ),
-        ),
-      );
+        );
 
     if (existingPayment) {
       payment = existingPayment;
     } else {
-      [payment] = await db
-        .insert(paymentsTable)
-        .values({
-          orderId: parsedOrderId,
-          userId: req.user!.id,
-          method: "irr",
-          status: "pending",
-          amount: order.total,
-          currency: "IRR",
-          provider: "zarinpal",
-        })
-        .returning();
+      [payment] =
+        await db
+          .insert(paymentsTable)
+          .values({
+            orderId: order.id,
+            userId: req.user!.id,
+            method: "irr",
+            status: "pending",
+            amount: order.total,
+            currency: "IRR",
+            provider: "zarinpal",
+          })
+          .returning();
     }
 
     if (!payment) {
@@ -333,15 +351,23 @@ router.post(
       return;
     }
 
-    /*
-     * If a gateway URL already exists, reuse it.
-     */
+    if (
+      payment.status === "paid"
+    ) {
+      res.status(409).json({
+        error:
+          "Payment has already been completed",
+      });
+      return;
+    }
+
     if (
       payment.gatewayUrl &&
       payment.providerReference
     ) {
       res.json({
         success: true,
+        status: payment.status,
         paymentId: payment.id,
         orderId: order.id,
         amount,
@@ -354,15 +380,19 @@ router.post(
       return;
     }
 
-    const result = await createIrrPayment(
-      amount,
-      `RafMarket order #${order.id}`,
-      {
-        orderId: order.id,
-      },
-    );
+    const result =
+      await createIrrPayment(
+        amount,
+        `RafMarket order #${order.id}`,
+        {
+          orderId: order.id,
+        },
+      );
 
-    if (!result.success || !result.authority) {
+    if (
+      !result.success ||
+      !result.authority
+    ) {
       res.status(502).json({
         error:
           result.message ||
@@ -375,27 +405,28 @@ router.post(
       result.paymentUrl ||
       `${ZARINPAL_START_URL}/${result.authority}`;
 
-    await db
-      .update(paymentsTable)
-      .set({
-        provider: "zarinpal",
-        providerReference:
-          result.authority,
-        gatewayUrl: paymentUrl,
-        status: "processing",
-      })
-      .where(
-        eq(
-          paymentsTable.id,
-          payment.id,
-        ),
-      );
+    const [updatedPayment] =
+      await db
+        .update(paymentsTable)
+        .set({
+          provider: "zarinpal",
+          providerReference:
+            result.authority,
+          gatewayUrl: paymentUrl,
+          status: "processing",
+        })
+        .where(
+          eq(
+            paymentsTable.id,
+            payment.id,
+          ),
+        )
+        .returning();
 
     req.log.info(
       {
         paymentId: payment.id,
         orderId: order.id,
-        authority: result.authority,
         amount,
       },
       "Iranian payment initiated",
@@ -404,52 +435,62 @@ router.post(
     res.json({
       success: true,
       status: "processing",
-      paymentId: payment.id,
+      paymentId:
+        updatedPayment?.id ??
+        payment.id,
       orderId: order.id,
       amount,
       currency: "IRR",
-      authority: result.authority,
+      authority:
+        result.authority,
       paymentUrl,
-      message:
-        "Iranian payment created successfully",
     });
   },
 );
 
 /* =========================================================
    GET /payments/irr/callback
-   ZarinPal redirects customer here after payment
+
+   ZarinPal callback.
+
+   IMPORTANT:
+   Payment is considered successful ONLY after
+   server-side verification with ZarinPal.
    ========================================================= */
 
 router.get(
   "/payments/irr/callback",
   async (req, res): Promise<void> => {
     const authority =
-      typeof req.query.Authority === "string"
+      typeof req.query.Authority ===
+      "string"
         ? req.query.Authority
         : "";
 
     const status =
-      typeof req.query.Status === "string"
+      typeof req.query.Status ===
+      "string"
         ? req.query.Status
         : "";
 
     if (!authority) {
       res.status(400).json({
-        error: "Payment authority is missing",
+        error:
+          "Payment authority is missing",
       });
       return;
     }
 
-    const [payment] = await db
-      .select()
-      .from(paymentsTable)
-      .where(
-        eq(
-          paymentsTable.providerReference,
-          authority,
-        ),
-      );
+    const [payment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          eq(
+            paymentsTable.providerReference,
+            authority,
+          ),
+        );
 
     if (!payment) {
       res.status(404).json({
@@ -460,15 +501,27 @@ router.get(
 
     if (payment.method !== "irr") {
       res.status(400).json({
-        error: "Invalid payment method",
+        error:
+          "Invalid payment method",
       });
       return;
     }
 
-    /*
-     * User cancelled or gateway reported failure.
-     */
-    if (status.toLowerCase() !== "ok") {
+    if (payment.status === "paid") {
+      res.json({
+        success: true,
+        status: "paid",
+        paymentId: payment.id,
+        orderId: payment.orderId,
+        message:
+          "Payment was already verified",
+      });
+      return;
+    }
+
+    if (
+      status.toLowerCase() !== "ok"
+    ) {
       await db
         .update(paymentsTable)
         .set({
@@ -504,7 +557,8 @@ router.get(
       return;
     }
 
-    const amount = Number(payment.amount);
+    const amount =
+      Number(payment.amount);
 
     if (
       !Number.isFinite(amount) ||
@@ -519,24 +573,25 @@ router.get(
     }
 
     try {
-      const verifyResponse = await fetch(
-        ZARINPAL_VERIFY_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-            Accept:
-              "application/json",
+      const verifyResponse =
+        await fetch(
+          ZARINPAL_VERIFY_URL,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+              Accept:
+                "application/json",
+            },
+            body: JSON.stringify({
+              merchant_id:
+                IRR_MERCHANT_ID,
+              amount,
+              authority,
+            }),
           },
-          body: JSON.stringify({
-            merchant_id:
-              IRR_MERCHANT_ID,
-            amount,
-            authority,
-          }),
-        },
-      );
+        );
 
       const verifyData =
         (await verifyResponse.json()) as {
@@ -554,7 +609,6 @@ router.get(
           {
             status:
               verifyResponse.status,
-            verifyData,
             paymentId: payment.id,
           },
           "ZarinPal verification request failed",
@@ -570,11 +624,6 @@ router.get(
       const code =
         verifyData.data?.code;
 
-      /*
-       * ZarinPal:
-       * 100 = successful verification
-       * 101 = already verified
-       */
       if (
         code !== 100 &&
         code !== 101
@@ -596,7 +645,8 @@ router.get(
           status: "failed",
           paymentId: payment.id,
           orderId: payment.orderId,
-          gatewayCode: code ?? null,
+          gatewayCode:
+            code ?? null,
           message:
             verifyData.data?.message ||
             "Iranian payment could not be verified",
@@ -607,21 +657,33 @@ router.get(
       const refId =
         verifyData.data?.ref_id;
 
-      await db
-        .update(paymentsTable)
-        .set({
-          status: "paid",
-          provider: "zarinpal",
-          providerReference:
-            authority,
-          paidAt: new Date(),
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        );
+      const [updatedPayment] =
+        await db
+          .update(paymentsTable)
+          .set({
+            status: "paid",
+            provider: "zarinpal",
+            providerReference:
+              authority,
+            paidAt: new Date(),
+          })
+          .where(
+            eq(
+              paymentsTable.id,
+              payment.id,
+            ),
+          )
+          .returning();
+
+      if (
+        !updatedPayment
+      ) {
+        res.status(500).json({
+          error:
+            "Unable to update payment",
+        });
+        return;
+      }
 
       await db
         .update(ordersTable)
@@ -638,13 +700,19 @@ router.get(
               ordersTable.userId,
               payment.userId,
             ),
+            eq(
+              ordersTable.status,
+              "pending",
+            ),
           ),
         );
 
       logger.info(
         {
-          paymentId: payment.id,
-          orderId: payment.orderId,
+          paymentId:
+            payment.id,
+          orderId:
+            payment.orderId,
           authority,
           refId,
         },
@@ -654,8 +722,10 @@ router.get(
       res.json({
         success: true,
         status: "paid",
-        paymentId: payment.id,
-        orderId: payment.orderId,
+        paymentId:
+          payment.id,
+        orderId:
+          payment.orderId,
         authority,
         refId:
           refId ?? null,
@@ -666,7 +736,8 @@ router.get(
       logger.error(
         {
           error,
-          paymentId: payment.id,
+          paymentId:
+            payment.id,
           authority,
         },
         "Iranian payment verification failed",
@@ -696,7 +767,9 @@ router.post(
       amount?: unknown;
     };
 
-    const parsedOrderId = parseId(orderId);
+    const parsedOrderId =
+      parseId(orderId);
+
     const parsedAmount =
       parsePositiveAmount(amount);
 
@@ -711,20 +784,10 @@ router.post(
       return;
     }
 
-    const [order] = await db
-      .select()
-      .from(ordersTable)
-      .where(
-        and(
-          eq(
-            ordersTable.id,
-            parsedOrderId,
-          ),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
+    const order =
+      await getUserOrder(
+        parsedOrderId,
+        req.user!.id,
       );
 
     if (!order) {
@@ -738,20 +801,8 @@ router.post(
       res.status(409).json({
         error:
           "This order is not a Pi order",
-      });
-      return;
-    }
-
-    const orderAmount =
-      Number(order.total);
-
-    if (
-      !Number.isFinite(orderAmount) ||
-      parsedAmount !== orderAmount
-    ) {
-      res.status(400).json({
-        error:
-          "Payment amount does not match order total",
+        orderCurrency:
+          order.currency,
       });
       return;
     }
@@ -761,6 +812,23 @@ router.post(
         error:
           "Order is not available for payment",
         status: order.status,
+      });
+      return;
+    }
+
+    const orderAmount =
+      Number(order.total);
+
+    if (
+      !Number.isFinite(
+        orderAmount,
+      ) ||
+      parsedAmount !==
+        orderAmount
+    ) {
+      res.status(400).json({
+        error:
+          "Payment amount does not match order total",
       });
       return;
     }
@@ -775,7 +843,7 @@ router.post(
           and(
             eq(
               paymentsTable.orderId,
-              parsedOrderId,
+              order.id,
             ),
             eq(
               paymentsTable.userId,
@@ -793,22 +861,24 @@ router.post(
         );
 
     if (existingPayment) {
-      payment = existingPayment;
+      payment =
+        existingPayment;
     } else {
-      [payment] = await db
-        .insert(paymentsTable)
-        .values({
-          orderId:
-            parsedOrderId,
-          userId:
-            req.user!.id,
-          method: "pi",
-          status: "pending",
-          amount: order.total,
-          currency: "Pi",
-          provider: "pi",
-        })
-        .returning();
+      [payment] =
+        await db
+          .insert(paymentsTable)
+          .values({
+            orderId: order.id,
+            userId:
+              req.user!.id,
+            method: "pi",
+            status: "pending",
+            amount:
+              order.total,
+            currency: "Pi",
+            provider: "pi",
+          })
+          .returning();
     }
 
     if (!payment) {
@@ -821,8 +891,7 @@ router.post(
 
     req.log.info(
       {
-        orderId:
-          parsedOrderId,
+        orderId: order.id,
         paymentId:
           payment.id,
         amount:
@@ -840,7 +909,7 @@ router.post(
         payment.providerPaymentId,
       txid: null,
       orderId:
-        parsedOrderId,
+        order.id,
       amount:
         orderAmount,
       currency: "Pi",
@@ -878,7 +947,12 @@ router.post(
 
     if (
       !parsedPaymentId ||
-      typeof piPaymentId !== "string" ||
+      (
+        orderId != null &&
+        !parsedOrderId
+      ) ||
+      typeof piPaymentId !==
+        "string" ||
       !piPaymentId.trim()
     ) {
       res.status(400).json({
@@ -888,26 +962,16 @@ router.post(
       return;
     }
 
-    const [payment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.id,
-              parsedPaymentId,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+    const payment =
+      await getPayment(
+        parsedPaymentId,
+        req.user!.id,
+      );
 
     if (!payment) {
       res.status(404).json({
-        error: "Payment not found",
+        error:
+          "Payment not found",
       });
       return;
     }
@@ -932,11 +996,55 @@ router.post(
       return;
     }
 
+    const order =
+      await getUserOrder(
+        payment.orderId,
+        req.user!.id,
+      );
+
+    if (!order) {
+      res.status(404).json({
+        error:
+          "Order not found",
+      });
+      return;
+    }
+
+    if (
+      order.status !==
+      "pending"
+    ) {
+      res.status(409).json({
+        error:
+          "Order is not available for payment",
+        status:
+          order.status,
+      });
+      return;
+    }
+
+    const paymentAmount =
+      Number(payment.amount);
+
+    if (
+      !Number.isFinite(
+        paymentAmount,
+      ) ||
+      paymentAmount !==
+        Number(order.total)
+    ) {
+      res.status(409).json({
+        error:
+          "Payment amount does not match order",
+      });
+      return;
+    }
+
     try {
       const response =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId,
+            piPaymentId.trim(),
           )}/approve`,
           {
             method: "POST",
@@ -956,8 +1064,8 @@ router.post(
           {
             status:
               response.status,
-            piPaymentId,
-            data,
+            paymentId:
+              payment.id,
           },
           "Pi payment approval failed",
         );
@@ -973,14 +1081,20 @@ router.post(
         .update(paymentsTable)
         .set({
           providerPaymentId:
-            piPaymentId,
+            piPaymentId.trim(),
           status:
             "processing",
         })
         .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
+          and(
+            eq(
+              paymentsTable.id,
+              payment.id,
+            ),
+            eq(
+              paymentsTable.status,
+              "pending",
+            ),
           ),
         );
 
@@ -990,14 +1104,16 @@ router.post(
           "approved",
         paymentId:
           payment.id,
-        piPaymentId,
+        piPaymentId:
+          piPaymentId.trim(),
         data,
       });
     } catch (error) {
       logger.error(
         {
           error,
-          piPaymentId,
+          paymentId:
+            payment.id,
         },
         "Pi payment approval request failed",
       );
@@ -1012,6 +1128,11 @@ router.post(
 
 /* =========================================================
    POST /payments/pi/complete
+
+   IMPORTANT:
+   The client-provided txid is NOT trusted.
+   The server verifies the payment with Pi API
+   before marking the order as paid.
    ========================================================= */
 
 router.post(
@@ -1036,7 +1157,8 @@ router.post(
       typeof piPaymentId !==
         "string" ||
       !piPaymentId.trim() ||
-      typeof txid !== "string" ||
+      typeof txid !==
+        "string" ||
       !txid.trim()
     ) {
       res.status(400).json({
@@ -1046,26 +1168,16 @@ router.post(
       return;
     }
 
-    const [payment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.id,
-              parsedPaymentId,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+    const payment =
+      await getPayment(
+        parsedPaymentId,
+        req.user!.id,
+      );
 
     if (!payment) {
       res.status(404).json({
-        error: "Payment not found",
+        error:
+          "Payment not found",
       });
       return;
     }
@@ -1078,34 +1190,62 @@ router.post(
       return;
     }
 
-    const [order] =
-      await db
-        .select()
-        .from(ordersTable)
-        .where(
-          and(
-            eq(
-              ordersTable.id,
-              payment.orderId,
-            ),
-            eq(
-              ordersTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
-
-    if (!order) {
-      res.status(404).json({
-        error: "Order not found",
+    if (
+      payment.status ===
+      "paid"
+    ) {
+      res.json({
+        success: true,
+        status: "paid",
+        paymentId:
+          payment.id,
+        orderId:
+          payment.orderId,
+        message:
+          "Payment already completed",
       });
       return;
     }
 
-    if (order.currency !== "Pi") {
+    const order =
+      await getUserOrder(
+        payment.orderId,
+        req.user!.id,
+      );
+
+    if (!order) {
+      res.status(404).json({
+        error:
+          "Order not found",
+      });
+      return;
+    }
+
+    if (
+      order.status !==
+      "pending"
+    ) {
       res.status(409).json({
         error:
-          "Order currency is not Pi",
+          "Order is not available for payment",
+        status:
+          order.status,
+      });
+      return;
+    }
+
+    const expectedAmount =
+      Number(order.total);
+
+    if (
+      !Number.isFinite(
+        expectedAmount,
+      ) ||
+      expectedAmount <= 0
+    ) {
+      res.status(409).json({
+        error:
+          "Invalid order amount",
       });
       return;
     }
@@ -1114,7 +1254,7 @@ router.post(
       const verifyResponse =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId,
+            piPaymentId.trim(),
           )}`,
           {
             headers:
@@ -1126,6 +1266,8 @@ router.post(
         (await verifyResponse.json()) as {
           identifier?: string;
           amount?: number;
+          memo?: string;
+          metadata?: unknown;
           status?: {
             developer_approved?: boolean;
             transaction_verified?: boolean;
@@ -1143,7 +1285,8 @@ router.post(
           {
             status:
               verifyResponse.status,
-            piPaymentId,
+            paymentId:
+              payment.id,
           },
           "Pi payment verification failed",
         );
@@ -1155,11 +1298,10 @@ router.post(
         return;
       }
 
-      const expectedAmount =
-        Number(order.total);
-
       const actualAmount =
-        Number(paymentData.amount);
+        Number(
+          paymentData.amount,
+        );
 
       if (
         !Number.isFinite(
@@ -1171,17 +1313,20 @@ router.post(
         res.status(409).json({
           error:
             "Pi payment amount does not match order",
+          expectedAmount,
+          actualAmount,
         });
         return;
       }
 
-      const transactionTxid =
+      const piTransactionTxid =
         paymentData.transaction
           ?.txid;
 
       if (
-        transactionTxid &&
-        transactionTxid !== txid
+        piTransactionTxid &&
+        piTransactionTxid !==
+          txid.trim()
       ) {
         res.status(409).json({
           error:
@@ -1190,24 +1335,22 @@ router.post(
         return;
       }
 
-      const status =
+      const piStatus =
         paymentData.status;
 
       if (
-        status?.cancelled ||
-        status?.user_cancelled
+        piStatus?.cancelled ||
+        piStatus?.user_cancelled
       ) {
         await db
-          .update(
-            paymentsTable,
-          )
+          .update(paymentsTable)
           .set({
             status:
               "cancelled",
             providerPaymentId:
-              piPaymentId,
+              piPaymentId.trim(),
             providerReference:
-              txid,
+              txid.trim(),
           })
           .where(
             eq(
@@ -1224,8 +1367,8 @@ router.post(
       }
 
       if (
-        !status?.developer_approved ||
-        !status?.transaction_verified
+        !piStatus?.developer_approved ||
+        !piStatus?.transaction_verified
       ) {
         res.status(409).json({
           error:
@@ -1235,12 +1378,13 @@ router.post(
       }
 
       /*
-       * Complete the payment on Pi Network.
+       * Tell Pi that the payment is complete.
        */
+
       const completeResponse =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId,
+            piPaymentId.trim(),
           )}/complete`,
           {
             method: "POST",
@@ -1248,7 +1392,8 @@ router.post(
               getPiHeaders(),
             body:
               JSON.stringify({
-                txid,
+                txid:
+                  txid.trim(),
               }),
           },
         );
@@ -1259,13 +1404,15 @@ router.post(
           unknown
         >;
 
-      if (!completeResponse.ok) {
+      if (
+        !completeResponse.ok
+      ) {
         logger.warn(
           {
             status:
               completeResponse.status,
-            piPaymentId,
-            completeData,
+            paymentId:
+              payment.id,
           },
           "Pi payment completion failed",
         );
@@ -1277,38 +1424,92 @@ router.post(
         return;
       }
 
+      /*
+       * Only after successful Pi completion
+       * do we mark our own payment and order
+       * as paid.
+       */
+
       const paidAt =
         new Date();
 
-      await db
-        .update(
-          paymentsTable,
-        )
-        .set({
-          status: "paid",
-          provider:
-            "pi",
-          providerPaymentId:
-            piPaymentId,
-          providerReference:
-            txid,
-          paidAt,
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        );
+      const [updatedPayment] =
+        await db
+          .update(paymentsTable)
+          .set({
+            status: "paid",
+            provider: "pi",
+            providerPaymentId:
+              piPaymentId.trim(),
+            providerReference:
+              txid.trim(),
+            paidAt,
+          })
+          .where(
+            and(
+              eq(
+                paymentsTable.id,
+                payment.id,
+              ),
+              eq(
+                paymentsTable.status,
+                "processing",
+              ),
+            ),
+          )
+          .returning();
+
+      /*
+       * If another request completed the payment
+       * concurrently, return the already-paid state.
+       */
+
+      if (!updatedPayment) {
+        const [currentPayment] =
+          await db
+            .select()
+            .from(
+              paymentsTable,
+            )
+            .where(
+              eq(
+                paymentsTable.id,
+                payment.id,
+              ),
+            );
+
+        if (
+          currentPayment?.status ===
+          "paid"
+        ) {
+          res.json({
+            success: true,
+            status: "paid",
+            paymentId:
+              payment.id,
+            orderId:
+              order.id,
+            message:
+              "Payment already completed",
+          });
+          return;
+        }
+
+        res.status(409).json({
+          error:
+            "Payment state changed before completion",
+        });
+        return;
+      }
 
       await db
-        .update(
-          ordersTable,
-        )
+        .update(ordersTable)
         .set({
           status: "paid",
-          piPaymentId,
-          piTxid: txid,
+          piPaymentId:
+            piPaymentId.trim(),
+          piTxid:
+            txid.trim(),
         })
         .where(
           and(
@@ -1320,6 +1521,10 @@ router.post(
               ordersTable.userId,
               req.user!.id,
             ),
+            eq(
+              ordersTable.status,
+              "pending",
+            ),
           ),
         );
 
@@ -1327,8 +1532,10 @@ router.post(
         {
           paymentId:
             payment.id,
-          piPaymentId,
-          txid,
+          piPaymentId:
+            piPaymentId.trim(),
+          txid:
+            txid.trim(),
           orderId:
             order.id,
         },
@@ -1340,10 +1547,14 @@ router.post(
         status: "paid",
         paymentId:
           payment.id,
-        piPaymentId,
-        txid,
+        piPaymentId:
+          piPaymentId.trim(),
+        txid:
+          txid.trim(),
         orderId:
           order.id,
+        data:
+          completeData,
         message:
           "Pi payment verified and completed",
       });
@@ -1351,8 +1562,10 @@ router.post(
       logger.error(
         {
           error,
-          paymentId,
-          piPaymentId,
+          paymentId:
+            payment.id,
+          piPaymentId:
+            piPaymentId.trim(),
         },
         "Pi payment completion failed",
       );
@@ -1397,26 +1610,16 @@ router.post(
       return;
     }
 
-    const [payment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.id,
-              parsedPaymentId,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+    const payment =
+      await getPayment(
+        parsedPaymentId,
+        req.user!.id,
+      );
 
     if (!payment) {
       res.status(404).json({
-        error: "Payment not found",
+        error:
+          "Payment not found",
       });
       return;
     }
@@ -1429,11 +1632,22 @@ router.post(
       return;
     }
 
+    if (
+      payment.status ===
+      "paid"
+    ) {
+      res.status(409).json({
+        error:
+          "Paid payment cannot be cancelled",
+      });
+      return;
+    }
+
     try {
       const response =
         await fetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
-            piPaymentId,
+            piPaymentId.trim(),
           )}/cancel`,
           {
             method: "POST",
@@ -1450,7 +1664,8 @@ router.post(
           {
             status:
               response.status,
-            piPaymentId,
+            paymentId:
+              payment.id,
             data,
           },
           "Pi payment cancellation failed",
@@ -1464,19 +1679,25 @@ router.post(
       }
 
       await db
-        .update(
-          paymentsTable,
-        )
+        .update(paymentsTable)
         .set({
           status:
             "cancelled",
+          provider:
+            "pi",
           providerPaymentId:
-            piPaymentId,
+            piPaymentId.trim(),
         })
         .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
+          and(
+            eq(
+              paymentsTable.id,
+              payment.id,
+            ),
+            eq(
+              paymentsTable.status,
+              "pending",
+            ),
           ),
         );
 
@@ -1486,13 +1707,15 @@ router.post(
           "cancelled",
         paymentId:
           payment.id,
-        piPaymentId,
+        piPaymentId:
+          piPaymentId.trim(),
       });
     } catch (error) {
       logger.error(
         {
           error,
-          piPaymentId,
+          paymentId:
+            payment.id,
         },
         "Pi payment cancellation failed",
       );
@@ -1514,13 +1737,7 @@ router.get(
   requireAuth,
   async (req, res): Promise<void> => {
     const id =
-      parseId(
-        Array.isArray(
-          req.params.id,
-        )
-          ? req.params.id[0]
-          : req.params.id,
-      );
+      parseId(req.params.id);
 
     if (!id) {
       res.status(400).json({
@@ -1530,22 +1747,11 @@ router.get(
       return;
     }
 
-    const [payment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.id,
-              id,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+    const payment =
+      await getPayment(
+        id,
+        req.user!.id,
+      );
 
     if (!payment) {
       res.status(404).json({
