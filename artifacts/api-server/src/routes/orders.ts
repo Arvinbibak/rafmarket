@@ -67,16 +67,23 @@ function toOrder(
     status: row.status,
     piPaymentId:
       row.piPaymentId,
-    piTxid: row.piTxid,
+    piTxid:
+      row.piTxid,
     shippingAddress:
       row.shippingAddress,
-    notes: row.notes,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    notes:
+      row.notes,
+    createdAt:
+      row.createdAt,
+    updatedAt:
+      row.updatedAt,
   };
 }
 
-// GET /orders
+/* =========================================================
+   GET /orders
+   ========================================================= */
+
 router.get(
   "/orders",
   requireAuth,
@@ -93,7 +100,8 @@ router.get(
       )
     ) {
       res.status(400).json({
-        error: "Invalid order status",
+        error:
+          "Invalid order status",
         allowedStatuses:
           ORDER_STATUSES,
       });
@@ -116,12 +124,13 @@ router.get(
       );
     }
 
-    const rows = await db
-      .select()
-      .from(ordersTable)
-      .where(
-        and(...conditions),
-      );
+    const rows =
+      await db
+        .select()
+        .from(ordersTable)
+        .where(
+          and(...conditions),
+        );
 
     res.json(
       rows.map((row) =>
@@ -134,7 +143,10 @@ router.get(
   },
 );
 
-// POST /orders
+/* =========================================================
+   POST /orders
+   ========================================================= */
+
 router.post(
   "/orders",
   requireAuth,
@@ -172,10 +184,24 @@ router.post(
       return;
     }
 
-    const method: PaymentMethod =
-      paymentMethod === "irr"
-        ? "irr"
-        : "pi";
+    if (
+      typeof paymentMethod !==
+        "string" ||
+      !PAYMENT_METHODS.includes(
+        paymentMethod as PaymentMethod,
+      )
+    ) {
+      res.status(400).json({
+        error:
+          "Invalid payment method",
+        allowedMethods:
+          PAYMENT_METHODS,
+      });
+      return;
+    }
+
+    const method =
+      paymentMethod as PaymentMethod;
 
     const safeShippingAddress =
       typeof shippingAddress ===
@@ -205,24 +231,29 @@ router.post(
       safeNotes.length > 2000
     ) {
       res.status(400).json({
-        error: "notes is too long",
+        error:
+          "notes is too long",
       });
       return;
     }
 
-    const cartItems = await db
-      .select()
-      .from(cartItemsTable)
-      .where(
-        eq(
-          cartItemsTable.userId,
-          req.user!.id,
-        ),
-      );
+    const cartItems =
+      await db
+        .select()
+        .from(cartItemsTable)
+        .where(
+          eq(
+            cartItemsTable.userId,
+            req.user!.id,
+          ),
+        );
 
-    if (cartItems.length === 0) {
+    if (
+      cartItems.length === 0
+    ) {
       res.status(400).json({
-        error: "Cart is empty",
+        error:
+          "Cart is empty",
       });
       return;
     }
@@ -236,15 +267,16 @@ router.post(
       ),
     ];
 
-    const products = await db
-      .select()
-      .from(productsTable)
-      .where(
-        inArray(
-          productsTable.id,
-          productIds,
-        ),
-      );
+    const products =
+      await db
+        .select()
+        .from(productsTable)
+        .where(
+          inArray(
+            productsTable.id,
+            productIds,
+          ),
+        );
 
     const productMap =
       new Map(
@@ -258,7 +290,9 @@ router.post(
 
     const items: OrderItem[] = [];
 
-    for (const cartItem of cartItems) {
+    for (
+      const cartItem of cartItems
+    ) {
       const product =
         productMap.get(
           cartItem.productId,
@@ -275,7 +309,8 @@ router.post(
       }
 
       if (
-        product.status !== "active"
+        product.status !==
+        "active"
       ) {
         res.status(409).json({
           error:
@@ -336,6 +371,23 @@ router.post(
         return;
       }
 
+      if (
+        product.currency !==
+          "Pi" &&
+        product.currency !==
+          "IRR"
+      ) {
+        res.status(409).json({
+          error:
+            "Product has an unsupported currency",
+          productId:
+            product.id,
+          currency:
+            product.currency,
+        });
+        return;
+      }
+
       items.push({
         productId:
           product.id,
@@ -352,6 +404,10 @@ router.post(
       });
     }
 
+    /* -----------------------------------------------------
+       Make sure all products use exactly one currency.
+       ----------------------------------------------------- */
+
     const currencies = [
       ...new Set(
         items.map(
@@ -367,12 +423,17 @@ router.post(
       res.status(409).json({
         error:
           "All order items must use the same currency",
+        currencies,
       });
       return;
     }
 
     const productCurrency =
       currencies[0];
+
+    /* -----------------------------------------------------
+       Payment method must match product currency.
+       ----------------------------------------------------- */
 
     if (
       method === "pi" &&
@@ -381,6 +442,10 @@ router.post(
       res.status(409).json({
         error:
           "Pi payment requires Pi products",
+        paymentMethod:
+          method,
+        currency:
+          productCurrency,
       });
       return;
     }
@@ -392,13 +457,20 @@ router.post(
       res.status(409).json({
         error:
           "IRR payment requires IRR products",
+        paymentMethod:
+          method,
+        currency:
+          productCurrency,
       });
       return;
     }
 
     const total =
       items.reduce(
-        (sum, item) =>
+        (
+          sum,
+          item,
+        ) =>
           sum +
           item.price *
             item.quantity,
@@ -415,6 +487,10 @@ router.post(
       });
       return;
     }
+
+    /* -----------------------------------------------------
+       Create order.
+       ----------------------------------------------------- */
 
     const [order] =
       await db
@@ -446,8 +522,10 @@ router.post(
       return;
     }
 
-    // Clear cart only after
-    // successful order creation.
+    /* -----------------------------------------------------
+       Clear cart only after order creation.
+       ----------------------------------------------------- */
+
     await db
       .delete(cartItemsTable)
       .where(
@@ -457,8 +535,13 @@ router.post(
         ),
       );
 
-    // Reduce stock.
-    for (const item of items) {
+    /* -----------------------------------------------------
+       Reduce stock.
+       ----------------------------------------------------- */
+
+    for (
+      const item of items
+    ) {
       const product =
         productMap.get(
           item.productId,
@@ -473,4 +556,232 @@ router.post(
         item.quantity;
 
       await db
-        .update
+        .update(productsTable)
+        .set({
+          stock:
+            newStock,
+          status:
+            newStock === 0
+              ? "sold_out"
+              : "active",
+        })
+        .where(
+          and(
+            eq(
+              productsTable.id,
+              item.productId,
+            ),
+            eq(
+              productsTable.stock,
+              product.stock,
+            ),
+          ),
+        );
+    }
+
+    res.status(201).json(
+      toOrder(
+        order,
+        req.user!.piUsername,
+      ),
+    );
+  },
+);
+
+/* =========================================================
+   GET /orders/:id
+   ========================================================= */
+
+router.get(
+  "/orders/:id",
+  requireAuth,
+  async (req, res): Promise<void> => {
+    const id =
+      parseInt(
+        Array.isArray(
+          req.params.id,
+        )
+          ? req.params.id[0]
+          : req.params.id,
+        10,
+      );
+
+    if (
+      !Number.isInteger(id) ||
+      id <= 0
+    ) {
+      res.status(400).json({
+        error:
+          "Invalid order id",
+      });
+      return;
+    }
+
+    const [order] =
+      await db
+        .select()
+        .from(ordersTable)
+        .where(
+          and(
+            eq(
+              ordersTable.id,
+              id,
+            ),
+            eq(
+              ordersTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
+
+    if (!order) {
+      res.status(404).json({
+        error:
+          "Order not found",
+      });
+      return;
+    }
+
+    res.json(
+      toOrder(
+        order,
+        req.user!.piUsername,
+      ),
+    );
+  },
+);
+
+/* =========================================================
+   PATCH /orders/:id/status
+   Admin only
+   ========================================================= */
+
+router.patch(
+  "/orders/:id/status",
+  requireAuth,
+  requireAdmin,
+  async (req, res): Promise<void> => {
+    const id =
+      parseInt(
+        Array.isArray(
+          req.params.id,
+        )
+          ? req.params.id[0]
+          : req.params.id,
+        10,
+      );
+
+    if (
+      !Number.isInteger(id) ||
+      id <= 0
+    ) {
+      res.status(400).json({
+        error:
+          "Invalid order id",
+      });
+      return;
+    }
+
+    const {
+      status,
+      notes,
+    } = req.body as {
+      status?: unknown;
+      notes?: unknown;
+    };
+
+    if (
+      typeof status !==
+        "string" ||
+      !ORDER_STATUSES.includes(
+        status as OrderStatus,
+      )
+    ) {
+      res.status(400).json({
+        error:
+          "Invalid order status",
+        allowedStatuses:
+          ORDER_STATUSES,
+      });
+      return;
+    }
+
+    if (
+      notes != null &&
+      typeof notes !== "string"
+    ) {
+      res.status(400).json({
+        error:
+          "notes must be a string",
+      });
+      return;
+    }
+
+    if (
+      typeof notes ===
+        "string" &&
+      notes.length > 2000
+    ) {
+      res.status(400).json({
+        error:
+          "notes is too long",
+      });
+      return;
+    }
+
+    const update:
+      Partial<
+        typeof ordersTable.$inferInsert
+      > = {
+      status,
+    };
+
+    if (
+      typeof notes ===
+      "string"
+    ) {
+      update.notes =
+        notes.trim();
+    }
+
+    const [order] =
+      await db
+        .update(ordersTable)
+        .set(update)
+        .where(
+          eq(
+            ordersTable.id,
+            id,
+          ),
+        )
+        .returning();
+
+    if (!order) {
+      res.status(404).json({
+        error:
+          "Order not found",
+      });
+      return;
+    }
+
+    const [user] =
+      await db
+        .select()
+        .from(usersTable)
+        .where(
+          eq(
+            usersTable.id,
+            order.userId,
+          ),
+        );
+
+    res.json(
+      toOrder(
+        order,
+        user?.piUsername,
+      ),
+    );
+  },
+);
+
+export default router;
