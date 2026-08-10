@@ -9,6 +9,7 @@ const router: IRouter = Router();
 // POST /auth/pi - Authenticate with Pi Network
 router.post("/auth/pi", async (req, res): Promise<void> => {
   const { accessToken } = req.body as { accessToken?: string };
+
   if (!accessToken) {
     res.status(400).json({ error: "accessToken required" });
     return;
@@ -21,33 +22,50 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
     });
 
     if (!piRes.ok) {
-      req.log.warn({ status: piRes.status }, "Pi auth failed");
+      logger.warn({ status: piRes.status }, "Pi auth failed");
       res.status(401).json({ error: "Invalid Pi access token" });
       return;
     }
 
-    const piUser = (await piRes.json()) as { uid: string; username: string };
+    const piUser = (await piRes.json()) as {
+      uid: string;
+      username: string;
+    };
 
     // Upsert user
-    let [user] = await db.select().from(usersTable).where(eq(usersTable.piUid, piUser.uid));
+    let [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.piUid, piUser.uid));
 
     if (!user) {
-      const [created] = await db.insert(usersTable).values({
-        piUid: piUser.uid,
-        piUsername: piUser.username,
-        role: "user",
-      }).returning();
+      const [created] = await db
+        .insert(usersTable)
+        .values({
+          piUid: piUser.uid,
+          piUsername: piUser.username,
+          role: "user",
+        })
+        .returning();
+
       user = created;
-      req.log.info({ userId: user.id }, "New user registered");
+
+      logger.info({ userId: user.id }, "New user registered");
     } else if (user.piUsername !== piUser.username) {
-      const [updated] = await db.update(usersTable)
+      const [updated] = await db
+        .update(usersTable)
         .set({ piUsername: piUser.username })
         .where(eq(usersTable.id, user.id))
         .returning();
+
       user = updated;
     }
 
-    const token = signToken({ id: user.id, piUsername: user.piUsername, role: user.role });
+    const token = signToken({
+      id: user.id,
+      piUsername: user.piUsername,
+      role: user.role,
+    });
 
     res.json({
       user: {
@@ -69,11 +87,16 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
 
 // GET /auth/me
 router.get("/auth/me", requireAuth, async (req, res): Promise<void> => {
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user!.id));
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, req.user!.id));
+
   if (!user) {
     res.status(401).json({ error: "User not found" });
     return;
   }
+
   res.json({
     id: user.id,
     piUsername: user.piUsername,
