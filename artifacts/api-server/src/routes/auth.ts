@@ -25,7 +25,7 @@ router.post(
 
     try {
       // Verify with Pi Network API
-      const piRes: globalThis.Response = await fetch(
+      const piResponse = await fetch(
         "https://api.minepi.com/v2/me",
         {
           headers: {
@@ -34,9 +34,11 @@ router.post(
         },
       );
 
-      if (!piRes.ok) {
+      const piStatus = piResponse.status;
+
+      if (piStatus < 200 || piStatus >= 300) {
         logger.warn(
-          { status: piRes.status },
+          { status: piStatus },
           "Pi auth failed",
         );
 
@@ -47,7 +49,7 @@ router.post(
         return;
       }
 
-      const piUser = (await piRes.json()) as {
+      const piUser = (await piResponse.json()) as {
         uid: string;
         username: string;
       };
