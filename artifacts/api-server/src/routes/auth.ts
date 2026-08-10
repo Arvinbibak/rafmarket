@@ -25,14 +25,20 @@ router.post(
 
     try {
       // Verify with Pi Network API
-      const piResponse = await fetch(
+      const piResponse = (await fetch(
         "https://api.minepi.com/v2/me",
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
         },
-      );
+      )) as unknown as {
+        status: number;
+        json: () => Promise<{
+          uid: string;
+          username: string;
+        }>;
+      };
 
       const piStatus = piResponse.status;
 
@@ -49,10 +55,7 @@ router.post(
         return;
       }
 
-      const piUser = (await piResponse.json()) as {
-        uid: string;
-        username: string;
-      };
+      const piUser = await piResponse.json();
 
       // Find existing user
       let [user] = await db
