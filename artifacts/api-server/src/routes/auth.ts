@@ -19,17 +19,22 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
   }
 
   try {
-    const response = await fetch("https://api.minepi.com/v2/me", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+    const piResponse = await fetch(
+      "https://api.minepi.com/v2/me",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
+    );
 
-    const status = response.status;
+    const piStatus = Number(
+      (piResponse as unknown as { status?: number }).status ?? 0,
+    );
 
-    if (status < 200 || status >= 300) {
+    if (piStatus < 200 || piStatus >= 300) {
       logger.warn(
-        { status },
+        { status: piStatus },
         "Pi authentication failed",
       );
 
@@ -40,10 +45,24 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
       return;
     }
 
-    const piUser = (await response.json()) as {
+    const piJson = (piResponse as unknown as {
+      json: () => Promise<unknown>;
+    }).json;
+
+    const piUser = (await piJson.call(piResponse)) as {
       uid: string;
       username: string;
     };
+
+    if (!piUser?.uid || !piUser?.username) {
+      logger.warn("Invalid response from Pi Network API");
+
+      res.status(401).json({
+        error: "Invalid Pi user response",
+      });
+
+      return;
+    }
 
     let [user] = await db
       .select()
