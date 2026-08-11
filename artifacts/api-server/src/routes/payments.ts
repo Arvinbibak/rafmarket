@@ -248,24 +248,6 @@ router.post(
       return;
     }
 
-    const [payment] =
-  await db
-    .insert(paymentsTable)
-    .values({
-      orderId: order.id,
-      userId: req.user!.id,
-      method: "pi",
-      amount: String(parsedAmount),
-      currency: "Pi",
-      status: "pending",
-      providerPaymentId:
-        cleanPiPaymentId,
-      providerReference:
-        typeof memo === "string"
-          ? memo.trim()
-          : null,
-    })
-    .returning();
 
     const [existingPayment] =
       await db
