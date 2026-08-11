@@ -21,10 +21,6 @@ type PaymentMethod = "pi" | "irr";
 
 const PI_API_BASE = "https://api.minepi.com/v2";
 
-/* -------------------------------------------------------------------------- */
-/* Types                                                                      */
-/* -------------------------------------------------------------------------- */
-
 type PiPaymentStatus = {
   developer_approved?: boolean;
   transaction_verified?: boolean;
@@ -54,10 +50,6 @@ type PiFetchResponse = {
 };
 
 type PaymentRecord = typeof paymentsTable.$inferSelect;
-
-/* -------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* -------------------------------------------------------------------------- */
 
 async function piFetch(
   input: string,
@@ -166,9 +158,7 @@ async function findUserPayment(
   return undefined;
 }
 
-function parseJson(
-  text: string,
-): unknown {
+function parseJson(text: string): unknown {
   if (!text) {
     return null;
   }
@@ -248,57 +238,90 @@ router.post(
       return;
     }
 
-
-   const [existingPayment] =
-  await db
-    .select()
-    .from(paymentsTable)
-    .where(
-      and(
-        eq(
-          paymentsTable.orderId,
-          parsedOrderId,
+    const [order] = await db
+      .select()
+      .from(ordersTable)
+      .where(
+        and(
+          eq(
+            ordersTable.id,
+            parsedOrderId,
+          ),
+          eq(
+            ordersTable.userId,
+            req.user!.id,
+          ),
         ),
-        eq(
-          paymentsTable.userId,
-          req.user!.id,
-        ),
-      ),
-    );
+      );
 
-if (existingPayment) {
-  res.json({
-    success: true,
-    payment: existingPayment,
-  });
-  return;
-}
+    if (!order) {
+      res.status(404).json({
+        error: "Order not found",
+      });
+      return;
+    }
 
-const [payment] =
-  await db
-    .insert(paymentsTable)
-    .values({
-      orderId: parsedOrderId,
-      userId: req.user!.id,
-      method: method as PaymentMethod,
-      amount: String(parsedAmount),
-      currency: currency.trim(),
-      status: "pending",
-      providerPaymentId:
-        typeof providerPaymentId === "string"
-          ? providerPaymentId.trim()
-          : null,
-      providerReference:
-        typeof providerReference === "string"
-          ? providerReference.trim()
-          : null,
-    })
-    .returning();
+    if (order.status === "cancelled") {
+      res.status(409).json({
+        error: "Order is cancelled",
+      });
+      return;
+    }
 
-res.status(201).json({
-  success: true,
-  payment,
-}); -------------------------------------------------------------------------- */
+    const [existingPayment] =
+      await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(
+              paymentsTable.orderId,
+              parsedOrderId,
+            ),
+            eq(
+              paymentsTable.userId,
+              req.user!.id,
+            ),
+          ),
+        );
+
+    if (existingPayment) {
+      res.json({
+        success: true,
+        payment: existingPayment,
+      });
+      return;
+    }
+
+    const [payment] =
+      await db
+        .insert(paymentsTable)
+        .values({
+          orderId: parsedOrderId,
+          userId: req.user!.id,
+          method: method as PaymentMethod,
+          amount: String(parsedAmount),
+          currency: currency.trim(),
+          status: "pending",
+          providerPaymentId:
+            typeof providerPaymentId === "string"
+              ? providerPaymentId.trim()
+              : null,
+          providerReference:
+            typeof providerReference === "string"
+              ? providerReference.trim()
+              : null,
+        })
+        .returning();
+
+    res.status(201).json({
+      success: true,
+      payment,
+    });
+  },
+);
+
+/* -------------------------------------------------------------------------- */
 /* POST /payments/pi/initiate                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -679,8 +702,6 @@ router.post(
     }
 
     try {
-      /* ----------------------------- VERIFY ----------------------------- */
-
       const verifyResponse =
         await piFetch(
           `${PI_API_BASE}/payments/${encodeURIComponent(
@@ -733,8 +754,6 @@ router.post(
       const piStatus =
         paymentData?.status;
 
-      /* --------------------------- CANCELLED ---------------------------- */
-
       if (
         piStatus?.cancelled ||
         piStatus?.user_cancelled
@@ -762,8 +781,6 @@ router.post(
         return;
       }
 
-      /* -------------------------- APPROVAL CHECK ------------------------- */
-
       if (
         !piStatus?.developer_approved
       ) {
@@ -774,8 +791,6 @@ router.post(
         return;
       }
 
-      /* ------------------------- TRANSACTION CHECK ----------------------- */
-
       if (
         !piStatus?.transaction_verified
       ) {
@@ -785,8 +800,6 @@ router.post(
         });
         return;
       }
-
-      /* --------------------------- TXID CHECK ---------------------------- */
 
       const transactionTxid =
         paymentData?.transaction?.txid;
@@ -813,8 +826,6 @@ router.post(
         });
         return;
       }
-
-      /* ----------------------------- COMPLETE ---------------------------- */
 
       const completeResponse =
         await piFetch(
@@ -856,8 +867,6 @@ router.post(
         });
         return;
       }
-
-      /* ---------------------------- DATABASE ----------------------------- */
 
       const paidAt = new Date();
 
