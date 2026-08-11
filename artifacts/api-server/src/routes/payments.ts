@@ -248,35 +248,24 @@ router.post(
       return;
     }
 
-    const [order] = await db
-      .select()
-      .from(ordersTable)
-      .where(
-        and(
-          eq(
-            ordersTable.id,
-            parsedOrderId,
-          ),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
-      );
-
-    if (!order) {
-      res.status(404).json({
-        error: "Order not found",
-      });
-      return;
-    }
-
-    if (order.status === "cancelled") {
-      res.status(409).json({
-        error: "Order is cancelled",
-      });
-      return;
-    }
+    const [payment] =
+  await db
+    .insert(paymentsTable)
+    .values({
+      orderId: order.id,
+      userId: req.user!.id,
+      method: "pi",
+      amount: String(parsedAmount),
+      currency: "Pi",
+      status: "pending",
+      providerPaymentId:
+        cleanPiPaymentId,
+      providerReference:
+        typeof memo === "string"
+          ? memo.trim()
+          : null,
+    })
+    .returning();
 
     const [existingPayment] =
       await db
