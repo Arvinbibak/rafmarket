@@ -1,23 +1,18 @@
-
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { rm } from "node:fs/promises";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
 
 globalThis.require = createRequire(import.meta.url);
 
-const artifactDir = path.dirname(
-  fileURLToPath(import.meta.url),
-);
+const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+
+const distDir = path.resolve(artifactDir, "dist");
 
 async function buildAll() {
-  const distDir = path.resolve(
-    artifactDir,
-    "dist",
-  );
-
+  // Clean previous build
   await rm(distDir, {
     recursive: true,
     force: true,
@@ -25,14 +20,14 @@ async function buildAll() {
 
   await esbuild({
     entryPoints: [
-      path.resolve(
-        artifactDir,
-        "src/index.ts",
-      ),
+      path.resolve(artifactDir, "src/index.ts"),
     ],
 
     platform: "node",
 
+    // IMPORTANT:
+    // Bundle the complete workspace application, including
+    // @workspace/db and @workspace/api-zod.
     bundle: true,
 
     format: "esm",
@@ -47,18 +42,8 @@ async function buildAll() {
 
     logLevel: "info",
 
-    // IMPORTANT:
-    // Force esbuild to resolve the workspace database package
-    // from the source inside the monorepo and bundle it into
-    // the API server instead of leaving @workspace/db as a
-    // runtime dependency.
-    alias: {
-      "@workspace/db": path.resolve(
-        artifactDir,
-        "../../lib/db/src/index.ts",
-      ),
-    },
-
+    // Do NOT externalize @workspace packages.
+    // They must be included in the final server bundle.
     external: [
       "*.node",
       "sharp",
@@ -141,15 +126,20 @@ async function buildAll() {
     ],
 
     banner: {
-      js: `import { createRequire as __bannerCrReq } from 'node:module';
-import __bannerPath from 'node:path';
-import __bannerUrl from 'node:url';
+      js: `
+import { createRequire as __bannerCrReq } from "node:module";
+import __bannerPath from "node:path";
+import __bannerUrl from "node:url";
 
 globalThis.require = __bannerCrReq(import.meta.url);
 globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
 globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
 `,
     },
+
+    // Make sure esbuild resolves workspace packages from
+    // the monorepo root.
+    absWorkingDir: path.resolve(artifactDir, "../.."),
   });
 }
 
