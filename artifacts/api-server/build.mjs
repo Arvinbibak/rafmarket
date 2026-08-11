@@ -8,16 +8,49 @@ import esbuildPluginPino from "esbuild-plugin-pino";
 globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = path.resolve(artifactDir, "../..");
+const dbDir = path.resolve(workspaceRoot, "lib/db");
+const dbDistDir = path.resolve(dbDir, "dist");
 
 const distDir = path.resolve(artifactDir, "dist");
 
 async function buildAll() {
-  // Clean previous build
+  // Clean previous API build
   await rm(distDir, {
     recursive: true,
     force: true,
   });
 
+  // Build the workspace database package first.
+  // This guarantees that @workspace/db resolves to compiled
+  // JavaScript instead of src/index.ts in the Vercel environment.
+  await esbuild({
+    entryPoints: [
+      path.resolve(dbDir, "src/index.ts"),
+    ],
+
+    platform: "node",
+
+    bundle: false,
+
+    format: "esm",
+
+    outdir: dbDistDir,
+
+    outExtension: {
+      ".js": ".js",
+    },
+
+    sourcemap: "linked",
+
+    logLevel: "info",
+
+    packages: "external",
+
+    absWorkingDir: workspaceRoot,
+  });
+
+  // Build the API server.
   await esbuild({
     entryPoints: [
       path.resolve(artifactDir, "src/index.ts"),
@@ -25,9 +58,6 @@ async function buildAll() {
 
     platform: "node",
 
-    // IMPORTANT:
-    // Bundle the complete workspace application, including
-    // @workspace/db and @workspace/api-zod.
     bundle: true,
 
     format: "esm",
@@ -42,8 +72,6 @@ async function buildAll() {
 
     logLevel: "info",
 
-    // Do NOT externalize @workspace packages.
-    // They must be included in the final server bundle.
     external: [
       "*.node",
       "sharp",
@@ -137,9 +165,13 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
 `,
     },
 
-    // Make sure esbuild resolves workspace packages from
-    // the monorepo root.
-    absWorkingDir: path.resolve(artifactDir, "../.."),
+    absWorkingDir: workspaceRoot,
+
+    // Force esbuild to resolve the compiled workspace database package.
+    alias: {
+      "@workspace/db": path.resolve(dbDistDir, "index.js"),
+      "@workspace/db/schema": path.resolve(dbDistDir, "schema/index.js"),
+    },
   });
 }
 
