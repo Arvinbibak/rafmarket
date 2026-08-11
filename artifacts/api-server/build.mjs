@@ -1,40 +1,22 @@
+
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
 import { rm } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 globalThis.require = createRequire(import.meta.url);
 
-const execFileAsync = promisify(execFile);
-
-const artifactDir = path.dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = path.resolve(artifactDir, "../..");
-const dbDir = path.resolve(workspaceRoot, "lib/db");
-
-async function buildDb() {
-  console.log("Building @workspace/db...");
-
-  await execFileAsync(
-    "pnpm",
-    ["--dir", dbDir, "run", "build"],
-    {
-      cwd: workspaceRoot,
-      stdio: "inherit",
-    }
-  );
-
-  console.log("@workspace/db build completed.");
-}
+const artifactDir = path.dirname(
+  fileURLToPath(import.meta.url),
+);
 
 async function buildAll() {
-  // Build database package first.
-  await buildDb();
-
-  const distDir = path.resolve(artifactDir, "dist");
+  const distDir = path.resolve(
+    artifactDir,
+    "dist",
+  );
 
   await rm(distDir, {
     recursive: true,
@@ -50,7 +32,9 @@ async function buildAll() {
     ],
 
     platform: "node",
+
     bundle: true,
+
     format: "esm",
 
     outdir: distDir,
@@ -62,6 +46,18 @@ async function buildAll() {
     sourcemap: "linked",
 
     logLevel: "info",
+
+    // IMPORTANT:
+    // Force esbuild to resolve the workspace database package
+    // from the source inside the monorepo and bundle it into
+    // the API server instead of leaving @workspace/db as a
+    // runtime dependency.
+    alias: {
+      "@workspace/db": path.resolve(
+        artifactDir,
+        "../../lib/db/src/index.ts",
+      ),
+    },
 
     external: [
       "*.node",
