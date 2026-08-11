@@ -249,60 +249,56 @@ router.post(
     }
 
 
-    const [existingPayment] =
-      await db
-        .select()
-        .from(paymentsTable)
-        .where(
-          and(
-            eq(
-              paymentsTable.orderId,
-              order.id,
-            ),
-            eq(
-              paymentsTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+   const [existingPayment] =
+  await db
+    .select()
+    .from(paymentsTable)
+    .where(
+      and(
+        eq(
+          paymentsTable.orderId,
+          parsedOrderId,
+        ),
+        eq(
+          paymentsTable.userId,
+          req.user!.id,
+        ),
+      ),
+    );
 
-    if (existingPayment) {
-      res.json({
-        success: true,
-        payment: existingPayment,
-      });
-      return;
-    }
+if (existingPayment) {
+  res.json({
+    success: true,
+    payment: existingPayment,
+  });
+  return;
+}
 
-    const [payment] =
-      await db
-        .insert(paymentsTable)
-        .values({
-          orderId: order.id,
-          userId: req.user!.id,
-          method: method as PaymentMethod,
-          amount: String(parsedAmount),
-          currency: currency.trim(),
-          status: "pending",
-          providerPaymentId:
-            typeof providerPaymentId === "string"
-              ? providerPaymentId.trim()
-              : null,
-          providerReference:
-            typeof providerReference === "string"
-              ? providerReference.trim()
-              : null,
-        })
-        .returning();
+const [payment] =
+  await db
+    .insert(paymentsTable)
+    .values({
+      orderId: parsedOrderId,
+      userId: req.user!.id,
+      method: method as PaymentMethod,
+      amount: String(parsedAmount),
+      currency: currency.trim(),
+      status: "pending",
+      providerPaymentId:
+        typeof providerPaymentId === "string"
+          ? providerPaymentId.trim()
+          : null,
+      providerReference:
+        typeof providerReference === "string"
+          ? providerReference.trim()
+          : null,
+    })
+    .returning();
 
-    res.status(201).json({
-      success: true,
-      payment,
-    });
-  },
-);
-
-/* -------------------------------------------------------------------------- */
+res.status(201).json({
+  success: true,
+  payment,
+}); -------------------------------------------------------------------------- */
 /* POST /payments/pi/initiate                                                 */
 /* -------------------------------------------------------------------------- */
 
