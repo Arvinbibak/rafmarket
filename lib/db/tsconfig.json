@@ -6,8 +6,7 @@
     "declarationMap": true,
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"],
-    "noEmit": false
+    "types": ["node"]
   },
   "include": ["src"]
 }
