@@ -442,7 +442,6 @@ router.post(
             typeof memo === "string"
               ? memo.trim()
               : null,
-          metadata: metadata ?? null,
         })
         .returning();
 
