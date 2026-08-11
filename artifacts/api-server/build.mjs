@@ -4,18 +4,37 @@ import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
 import { rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 globalThis.require = createRequire(import.meta.url);
 
-const artifactDir = path.dirname(
-  fileURLToPath(import.meta.url),
-);
+const execFileAsync = promisify(execFile);
+
+const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = path.resolve(artifactDir, "../..");
+const dbDir = path.resolve(workspaceRoot, "lib/db");
+
+async function buildDb() {
+  console.log("Building @workspace/db...");
+
+  await execFileAsync(
+    "pnpm",
+    ["--dir", dbDir, "run", "build"],
+    {
+      cwd: workspaceRoot,
+      stdio: "inherit",
+    }
+  );
+
+  console.log("@workspace/db build completed.");
+}
 
 async function buildAll() {
-  const distDir = path.resolve(
-    artifactDir,
-    "dist",
-  );
+  // Build database package first.
+  await buildDb();
+
+  const distDir = path.resolve(artifactDir, "dist");
 
   await rm(distDir, {
     recursive: true,
@@ -129,6 +148,7 @@ async function buildAll() {
       js: `import { createRequire as __bannerCrReq } from 'node:module';
 import __bannerPath from 'node:path';
 import __bannerUrl from 'node:url';
+
 globalThis.require = __bannerCrReq(import.meta.url);
 globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
 globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
