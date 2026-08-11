@@ -2,55 +2,96 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
 
 globalThis.require = createRequire(import.meta.url);
 
+const execFileAsync = promisify(execFile);
+
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+
 const workspaceRoot = path.resolve(artifactDir, "../..");
+
 const dbDir = path.resolve(workspaceRoot, "lib/db");
 const dbDistDir = path.resolve(dbDir, "dist");
 
-const distDir = path.resolve(artifactDir, "dist");
+const apiDistDir = path.resolve(artifactDir, "dist");
 
-async function buildAll() {
-  // Clean previous API build
-  await rm(distDir, {
+async function buildDatabase() {
+  console.log("==========================================");
+  console.log("Building @workspace/db");
+  console.log("==========================================");
+
+  await rm(dbDistDir, {
     recursive: true,
     force: true,
   });
 
-  // Build the workspace database package first.
-  // This guarantees that @workspace/db resolves to compiled
-  // JavaScript instead of src/index.ts in the Vercel environment.
-  await esbuild({
-    entryPoints: [
-      path.resolve(dbDir, "src/index.ts"),
+  /*
+   * IMPORTANT:
+   *
+   * Do NOT use esbuild directly for the database package.
+   *
+   * The database package contains:
+   *
+   *   src/index.ts
+   *   src/schema/*
+   *
+   * TypeScript must compile the complete src tree into:
+   *
+   *   lib/db/dist/index.js
+   *   lib/db/dist/schema/*
+   *
+   * This prevents Vercel from trying to load:
+   *
+   *   @workspace/db/src/index.ts
+   */
+
+  await execFileAsync(
+    "pnpm",
+    [
+      "--dir",
+      dbDir,
+      "exec",
+      "tsc",
+      "-p",
+      "tsconfig.json",
     ],
+    {
+      cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+      },
+    }
+  );
 
-    platform: "node",
+  console.log("Database package compiled successfully.");
+}
 
-    bundle: false,
+async function buildApi() {
+  console.log("==========================================");
+  console.log("Building @workspace/api-server");
+  console.log("==========================================");
 
-    format: "esm",
-
-    outdir: dbDistDir,
-
-    outExtension: {
-      ".js": ".js",
-    },
-
-    sourcemap: "linked",
-
-    logLevel: "info",
-
-    packages: "external",
-
-    absWorkingDir: workspaceRoot,
+  await rm(apiDistDir, {
+    recursive: true,
+    force: true,
   });
 
-  // Build the API server.
+  /*
+   * Verify that the compiled database package actually exists
+   * before starting the API build.
+   */
+
+  const dbEntry = path.resolve(dbDistDir, "index.js");
+
+  console.log("Using compiled database package:");
+  console.log(dbEntry);
+
   await esbuild({
     entryPoints: [
       path.resolve(artifactDir, "src/index.ts"),
@@ -62,7 +103,7 @@ async function buildAll() {
 
     format: "esm",
 
-    outdir: distDir,
+    outdir: apiDistDir,
 
     outExtension: {
       ".js": ".mjs",
@@ -71,6 +112,28 @@ async function buildAll() {
     sourcemap: "linked",
 
     logLevel: "info",
+
+    /*
+     * IMPORTANT:
+     *
+     * @workspace/db is NOT externalized.
+     *
+     * It is explicitly redirected to:
+     *
+     * lib/db/dist/index.js
+     *
+     * Therefore Vercel will not try to load:
+     *
+     * @workspace/db/src/index.ts
+     */
+
+    alias: {
+      "@workspace/db": dbEntry,
+      "@workspace/db/schema": path.resolve(
+        dbDistDir,
+        "schema/index.js"
+      ),
+    },
 
     external: [
       "*.node",
@@ -160,22 +223,61 @@ import __bannerPath from "node:path";
 import __bannerUrl from "node:url";
 
 globalThis.require = __bannerCrReq(import.meta.url);
-globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
-globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
+
+globalThis.__filename =
+  __bannerUrl.fileURLToPath(import.meta.url);
+
+globalThis.__dirname =
+  __bannerPath.dirname(globalThis.__filename);
 `,
     },
 
     absWorkingDir: workspaceRoot,
-
-    // Force esbuild to resolve the compiled workspace database package.
-    alias: {
-      "@workspace/db": path.resolve(dbDistDir, "index.js"),
-      "@workspace/db/schema": path.resolve(dbDistDir, "schema/index.js"),
-    },
   });
+
+  console.log("==========================================");
+  console.log("API build completed successfully.");
+  console.log("==========================================");
 }
 
-buildAll().catch((err) => {
-  console.error(err);
+async function buildAll() {
+  console.log("");
+  console.log("==========================================");
+  console.log("RafMarket production build");
+  console.log("==========================================");
+  console.log("");
+
+  /*
+   * STEP 1
+   *
+   * Compile the complete @workspace/db package.
+   */
+
+  await buildDatabase();
+
+  /*
+   * STEP 2
+   *
+   * Bundle the API using the compiled database package.
+   */
+
+  await buildApi();
+
+  console.log("");
+  console.log("==========================================");
+  console.log("BUILD FINISHED");
+  console.log("==========================================");
+  console.log("");
+}
+
+buildAll().catch((error) => {
+  console.error("");
+  console.error("==========================================");
+  console.error("BUILD FAILED");
+  console.error("==========================================");
+  console.error("");
+  console.error(error);
+  console.error("");
+
   process.exit(1);
 });
