@@ -10,8 +10,8 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-import { usersTable } from "./users";
-import { ordersTable } from "./orders";
+import { usersTable } from "./users.js";
+import { ordersTable } from "./orders.js";
 
 export const paymentsTable = pgTable(
   "payments",

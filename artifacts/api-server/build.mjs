@@ -50,6 +50,7 @@ async function buildDatabase() {
    *   @workspace/db/src/index.ts
    */
 
+  await rm(path.resolve(dbDir, "tsconfig.tsbuildinfo"), { force: true });
   await execFileAsync(
     "pnpm",
     [
