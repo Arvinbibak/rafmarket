@@ -14,7 +14,7 @@ import {
 import {
   requireAuth,
   requireAdmin,
-} from "../middlewares/auth";
+} from "../middlewares/auth.js";
 
 const router: IRouter = Router();
 

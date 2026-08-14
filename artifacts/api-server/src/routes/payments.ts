@@ -12,8 +12,8 @@ import {
 } from "@workspace/db";
 
 import { eq, and } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth";
-import { logger } from "../lib/logger";
+import { requireAuth } from "../middlewares/auth.js";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 

@@ -17,7 +17,7 @@ import {
   asc,
 } from "drizzle-orm";
 
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
 
