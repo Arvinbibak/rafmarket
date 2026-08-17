@@ -49,6 +49,7 @@ function toProduct(
 
 // GET /products
 router.get("/products", async (req, res): Promise<void> => {
+  try {
   const {
     category,
     search,
@@ -163,6 +164,13 @@ router.get("/products", async (req, res): Promise<void> => {
     page: pageNum,
     limit: limitNum,
   });
+  } catch (error) {
+    console.error("PRODUCTS ROUTE ERROR:", error);
+    res.status(500).json({
+      error: "Failed to fetch products",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 // GET /products/featured
