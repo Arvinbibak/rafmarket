@@ -920,10 +920,12 @@ components:
     # Payments
     PaymentInitInput:
       type: object
-      required: [orderId, amount]
+      required: [orderId, amount, paymentId]
       properties:
         orderId:
           type: integer
+        paymentId:
+          type: string
         amount:
           type: number
         memo:
