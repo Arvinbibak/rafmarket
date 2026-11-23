@@ -33,12 +33,12 @@ export default function Auth() {
       const authResults = await window.Pi.authenticate(scopes, onIncompletePaymentFound);
       
       // 2. Send accessToken to our backend
-      const { data } = await authenticateWithPi.mutateAsync({
+      const authResult = await authenticateWithPi.mutateAsync({
         data: { accessToken: authResults.accessToken }
       });
       
       // 3. Login locally
-      login(data.token, data.user);
+      login(authResult.token, authResult.user);
       setLocation('/');
       
     } catch (err) {
