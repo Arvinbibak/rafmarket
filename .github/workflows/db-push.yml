@@ -1,8 +1,14 @@
-
 name: Push Database Schema
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/db/src/schema/**"
+      - "lib/db/drizzle.config.ts"
+      - "lib/db/package.json"
 
 jobs:
   push-schema:

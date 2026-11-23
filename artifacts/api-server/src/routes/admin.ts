@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { db, ordersTable, productsTable, usersTable } from "@workspace/db";
+import { db, ordersTable, platformSettingsTable, productsTable, usersTable } from "@workspace/db";
 import { eq, sql, desc } from "drizzle-orm";
 import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 
@@ -98,6 +98,57 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res): Promise
     role: u.role,
     createdAt: u.createdAt,
   })));
+});
+
+ 
+// GET /admin/commission
+// Returns the current marketplace commission. Five percent is the safe default.
+router.get("/admin/commission", requireAuth, requireAdmin, async (_req, res): Promise<void> => {
+  const [setting] = await db
+    .select()
+    .from(platformSettingsTable)
+    .where(eq(platformSettingsTable.key, "commission_percent"))
+    .limit(1);
+
+  res.json({
+    commissionPercent: setting ? Number(setting.value) : 5,
+  });
+});
+
+// PATCH /admin/commission
+// Only administrators may change the rate. Keep the value bounded and numeric.
+router.patch("/admin/commission", requireAuth, requireAdmin, async (req, res): Promise<void> => {
+  const rawValue = (req.body as { commissionPercent?: unknown })?.commissionPercent;
+  const commissionPercent =
+    typeof rawValue === "number" ? rawValue :
+    typeof rawValue === "string" && rawValue.trim() !== "" ? Number(rawValue) : NaN;
+
+  if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 30) {
+    res.status(400).json({
+      error: "commissionPercent must be a number between 0 and 30",
+    });
+    return;
+  }
+
+  const [setting] = await db
+    .insert(platformSettingsTable)
+    .values({
+      key: "commission_percent",
+      value: commissionPercent.toFixed(4),
+    })
+    .onConflictDoUpdate({
+      target: platformSettingsTable.key,
+      set: {
+        value: commissionPercent.toFixed(4),
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  res.json({
+    success: true,
+    commissionPercent: Number(setting.value),
+  });
 });
 
 export default router;
