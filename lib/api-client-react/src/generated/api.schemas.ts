@@ -245,6 +245,7 @@ export interface OrderStatusPatch {
 
 export interface PaymentInitInput {
   orderId: number;
+  paymentId: string;
   amount: number;
   memo?: string;
 }
