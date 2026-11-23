@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'wouter';
 import { useAuth } from '@/contexts/AuthContext';
-import { useGetCart } from '@workspace/api-client-react';
+import { useGetCart, getGetCartQueryKey } from '@workspace/api-client-react';
 import { ShoppingCart, Menu, Search, User as UserIcon, LogOut, Package, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 export default function MainLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const [, setLocation] = useLocation();
-  const { data: cart } = useGetCart({ query: { enabled: !!user } });
+  const { data: cart } = useGetCart({ query: { queryKey: getGetCartQueryKey(), enabled: !!user } });
 
   const handleLogout = () => {
     logout();
