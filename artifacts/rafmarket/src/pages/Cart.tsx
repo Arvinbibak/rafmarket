@@ -60,7 +60,7 @@ export default function Cart() {
       
       // 1. Create order
       const order = await createOrder.mutateAsync({
-        data: { shippingAddress }
+        data: { shippingAddress, paymentMethod: 'pi' }
       });
 
       setPaymentStatus('Awaiting Pi App approval...');
