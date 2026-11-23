@@ -23,6 +23,7 @@ export const ordersTable = pgTable("orders", {
     .$type<
       Array<{
         productId: number;
+        sellerId?: number;
         productName: string;
         price: number;
         currency: string;
