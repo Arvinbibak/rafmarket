@@ -1,5 +1,5 @@
 import { useRoute, useParams } from 'wouter';
-import { useGetOrder } from '@workspace/api-client-react';
+import { useGetOrder, getGetOrderQueryKey } from '@workspace/api-client-react';
 import { Link } from 'wouter';
 import { ChevronLeft, Package, MapPin, CreditCard } from 'lucide-react';
 import { format } from 'date-fns';
@@ -9,7 +9,7 @@ export default function OrderDetail() {
   const id = params?.id;
   
   const { data: order, isLoading } = useGetOrder(id || '', {
-    query: { enabled: !!id }
+    query: { queryKey: getGetOrderQueryKey(id || ''), enabled: !!id }
   });
 
   if (isLoading) {
