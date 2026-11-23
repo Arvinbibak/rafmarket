@@ -42,6 +42,10 @@ export const sellerOrdersTable = pgTable(
     shippedAt: timestamp("shipped_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     disputeReason: text("dispute_reason"),
+    disputeOpenedAt: timestamp("dispute_opened_at", { withTimezone: true }),
+    disputeResolvedAt: timestamp("dispute_resolved_at", { withTimezone: true }),
+    disputeResolution: text("dispute_resolution"),
+    disputeAdminNote: text("dispute_admin_note"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
