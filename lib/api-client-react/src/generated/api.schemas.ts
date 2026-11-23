@@ -165,6 +165,7 @@ export interface CartItemPatch {
 
 export interface OrderItem {
   productId: number;
+  sellerId?: number;
   productName: string;
   price: number;
   currency: string;
@@ -186,12 +187,23 @@ export const OrderStatus = {
   refunded: 'refunded',
 } as const;
 
+export interface SellerOrderSummary {
+  id: number;
+  sellerId: number;
+  sellerUsername?: string | null;
+  items: OrderItem[];
+  subtotal: number;
+  currency: string;
+  status: string;
+}
+
 export interface Order {
   id: number;
   userId: number;
   /** @nullable */
   buyerUsername?: string | null;
   items: OrderItem[];
+  sellerOrders?: SellerOrderSummary[];
   total: number;
   currency: string;
   status: OrderStatus;
@@ -208,6 +220,7 @@ export interface Order {
 }
 
 export interface OrderInput {
+  paymentMethod: 'pi' | 'irr';
   shippingAddress?: string;
   notes?: string;
 }
