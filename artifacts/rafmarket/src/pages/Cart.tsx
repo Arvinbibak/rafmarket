@@ -36,13 +36,13 @@ export default function Cart() {
 
   const handleUpdateQuantity = (productId: number, quantity: number) => {
     if (quantity < 1) return;
-    updateItem.mutate({ id: productId.toString(), data: { quantity } }, {
+    updateItem.mutate({ productId: productId.toString(), data: { quantity } }, {
       onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() })
     });
   };
 
   const handleRemove = (productId: number) => {
-    removeItem.mutate({ id: productId.toString() }, {
+    removeItem.mutate({ productId: productId.toString() }, {
       onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() })
     });
   };
