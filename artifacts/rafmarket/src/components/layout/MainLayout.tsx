@@ -94,7 +94,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                     <Package className="mr-2 h-4 w-4" />
                     <span>Seller Orders</span>
                   </DropdownMenuItem>
-                  {(user.role === 'admin' || user.role === 'seller') && (
+                  {user.role === 'admin' && (
                     <DropdownMenuItem onClick={() => setLocation('/admin')} className="cursor-pointer">
                       <ShieldAlert className="mr-2 h-4 w-4" />
                       <span>Admin Dashboard</span>
