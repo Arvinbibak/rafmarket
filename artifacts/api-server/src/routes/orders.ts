@@ -109,6 +109,10 @@ async function toOrderWithSellerOrders(
       subtotal: Number(sellerOrder.subtotal),
       currency: sellerOrder.currency,
       status: sellerOrder.status,
+      trackingNumber: sellerOrder.trackingNumber,
+      shippingCarrier: sellerOrder.shippingCarrier,
+      disputeReason: sellerOrder.disputeReason,
+      disputeResolution: sellerOrder.disputeResolution,
     })),
   };
 }
