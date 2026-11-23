@@ -99,6 +99,35 @@ export default function OrderDetail() {
         </div>
       </div>
 
+      <div className="bg-card border border-border mb-8">
+        <div className="p-6 border-b border-border bg-muted/20">
+          <h2 className="text-xl font-medium tracking-tight">Seller Packages</h2>
+          <p className="text-sm text-muted-foreground mt-1">Each seller's items and amount are tracked separately.</p>
+        </div>
+        {order.sellerOrders && order.sellerOrders.length > 0 ? (
+          <div className="divide-y divide-border">
+            {order.sellerOrders.map((sellerOrder) => (
+              <div key={sellerOrder.id} className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">
+                    {sellerOrder.sellerUsername ? `@${sellerOrder.sellerUsername}` : `Seller #${sellerOrder.sellerId}`}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {sellerOrder.items.length} item(s) · Package #{sellerOrder.id}
+                  </p>
+                </div>
+                <div className="sm:text-right">
+                  <p className="font-mono font-bold">{sellerOrder.subtotal} {sellerOrder.currency === 'Pi' ? 'π' : sellerOrder.currency}</p>
+                  <p className="text-xs text-muted-foreground uppercase">{sellerOrder.status}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="p-6 text-sm text-muted-foreground">Seller breakdown is not available for this older order.</p>
+        )}
+      </div>
+
       <div className="bg-card border border-border">
         <div className="p-6 border-b border-border bg-muted/20">
           <h2 className="text-xl font-medium tracking-tight">Order Items</h2>
