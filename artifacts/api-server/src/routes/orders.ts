@@ -20,6 +20,8 @@ import {
 
 const router: IRouter = Router();
 
+// Seller suborders snapshot each seller's share at the moment the parent order is created.
+
 const ORDER_STATUSES = [
   "pending",
   "paid",
