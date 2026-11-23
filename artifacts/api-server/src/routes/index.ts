@@ -6,6 +6,7 @@ import categoriesRouter from "./categories.js";
 import productsRouter from "./products.js";
 import cartRouter from "./cart.js";
 import ordersRouter from "./orders.js";
+import sellerOrdersRouter from "./seller-orders.js";
 import paymentsRouter from "./payments.js";
 import adminRouter from "./admin.js";
 
@@ -17,6 +18,7 @@ router.use(categoriesRouter);
 router.use(productsRouter);
 router.use(cartRouter);
 router.use(ordersRouter);
+router.use(sellerOrdersRouter);
 router.use(paymentsRouter);
 router.use(adminRouter);
 

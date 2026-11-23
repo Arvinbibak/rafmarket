@@ -1,16 +1,57 @@
-import { useRoute, useParams } from 'wouter';
+import { useParams } from 'wouter';
 import { useGetOrder, getGetOrderQueryKey } from '@workspace/api-client-react';
 import { Link } from 'wouter';
+import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Package, MapPin, CreditCard } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function OrderDetail() {
   const params = useParams();
   const id = params?.id;
-  
+  const queryClient = useQueryClient();
+  const [packageBusy, setPackageBusy] = useState<Record<number, boolean>>({});
+  const [disputeReasons, setDisputeReasons] = useState<Record<number, string>>({});
+  const [packageMessage, setPackageMessage] = useState('');
+
   const { data: order, isLoading } = useGetOrder(id || '', {
     query: { queryKey: getGetOrderQueryKey(id || ''), enabled: !!id }
   });
+
+  const packageAction = async (sellerOrderId: number, action: 'confirm-delivery' | 'dispute') => {
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setPackageMessage('Please sign in again to manage this package.');
+      return;
+    }
+
+    const reason = disputeReasons[sellerOrderId]?.trim() ?? '';
+    if (action === 'dispute' && reason.length < 10) {
+      setPackageMessage('Please explain the problem in at least 10 characters.');
+      return;
+    }
+
+    setPackageBusy((current) => ({ ...current, [sellerOrderId]: true }));
+    setPackageMessage('');
+    try {
+      const response = await fetch(`/api/seller-orders/${sellerOrderId}/${action}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(action === 'dispute' ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(action === 'dispute' ? { body: JSON.stringify({ reason }) } : {}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not update package.');
+      setPackageMessage(data.message || 'Package updated.');
+      await queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id || '') });
+    } catch (error) {
+      setPackageMessage(error instanceof Error ? error.message : 'Could not update package.');
+    } finally {
+      setPackageBusy((current) => ({ ...current, [sellerOrderId]: false }));
+    }
+  };
 
   if (isLoading) {
     return (
@@ -103,23 +144,67 @@ export default function OrderDetail() {
         <div className="p-6 border-b border-border bg-muted/20">
           <h2 className="text-xl font-medium tracking-tight">Seller Packages</h2>
           <p className="text-sm text-muted-foreground mt-1">Each seller's items and amount are tracked separately.</p>
+          <p className="text-xs text-muted-foreground mt-1">Confirming delivery only records receipt; it does not send a seller payout.</p>
         </div>
+        {packageMessage && <p className="px-6 pt-4 text-sm text-muted-foreground" role="status">{packageMessage}</p>}
         {order.sellerOrders && order.sellerOrders.length > 0 ? (
           <div className="divide-y divide-border">
             {order.sellerOrders.map((sellerOrder) => (
-              <div key={sellerOrder.id} className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium">
-                    {sellerOrder.sellerUsername ? `@${sellerOrder.sellerUsername}` : `Seller #${sellerOrder.sellerId}`}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {sellerOrder.items.length} item(s) · Package #{sellerOrder.id}
-                  </p>
+              <div key={sellerOrder.id} className="p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">
+                      {sellerOrder.sellerUsername ? `@${sellerOrder.sellerUsername}` : `Seller #${sellerOrder.sellerId}`}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {sellerOrder.items.length} item(s) · Package #{sellerOrder.id}
+                    </p>
+                    {sellerOrder.trackingNumber && (
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Tracking: {sellerOrder.shippingCarrier ? `${sellerOrder.shippingCarrier} · ` : ''}{sellerOrder.trackingNumber}
+                      </p>
+                    )}
+                    {sellerOrder.disputeResolution && (
+                      <p className="text-xs text-muted-foreground mt-1">Admin decision: {sellerOrder.disputeResolution.replaceAll('_', ' ')}</p>
+                    )}
+                  </div>
+                  <div className="sm:text-right">
+                    <p className="font-mono font-bold">{sellerOrder.subtotal} {sellerOrder.currency === 'Pi' ? 'π' : sellerOrder.currency}</p>
+                    <p className="text-xs text-muted-foreground uppercase">{sellerOrder.status}</p>
+                  </div>
                 </div>
-                <div className="sm:text-right">
-                  <p className="font-mono font-bold">{sellerOrder.subtotal} {sellerOrder.currency === 'Pi' ? 'π' : sellerOrder.currency}</p>
-                  <p className="text-xs text-muted-foreground uppercase">{sellerOrder.status}</p>
-                </div>
+
+                {sellerOrder.status === 'shipped' && (
+                  <button
+                    type="button"
+                    onClick={() => packageAction(sellerOrder.id, 'confirm-delivery')}
+                    disabled={!!packageBusy[sellerOrder.id]}
+                    className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50"
+                  >
+                    {packageBusy[sellerOrder.id] ? 'Saving...' : 'Confirm delivery'}
+                  </button>
+                )}
+
+                {['paid', 'processing', 'shipped', 'delivered'].includes(sellerOrder.status) && (
+                  <div className="mt-4 space-y-2">
+                    <textarea
+                      value={disputeReasons[sellerOrder.id] ?? ''}
+                      onChange={(event) => setDisputeReasons((current) => ({ ...current, [sellerOrder.id]: event.target.value }))}
+                      rows={2}
+                      maxLength={2000}
+                      placeholder="Describe a problem with this package (at least 10 characters)..."
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => packageAction(sellerOrder.id, 'dispute')}
+                      disabled={!!packageBusy[sellerOrder.id]}
+                      className="rounded-md border border-destructive/40 px-4 py-2 text-sm text-destructive disabled:opacity-50"
+                    >
+                      Open a dispute
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

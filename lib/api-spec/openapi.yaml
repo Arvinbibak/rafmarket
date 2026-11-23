@@ -894,6 +894,14 @@ components:
           type: string
         status:
           type: string
+        trackingNumber:
+          type: ["string", "null"]
+        shippingCarrier:
+          type: ["string", "null"]
+        disputeReason:
+          type: ["string", "null"]
+        disputeResolution:
+          type: ["string", "null"]
 
     OrderInput:
       type: object

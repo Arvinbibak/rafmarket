@@ -13,6 +13,10 @@ export default function Admin() {
   const [commissionLoading, setCommissionLoading] = useState(true);
   const [commissionSaving, setCommissionSaving] = useState(false);
   const [commissionMessage, setCommissionMessage] = useState('');
+  const [disputedPackages, setDisputedPackages] = useState<any[]>([]);
+  const [disputesLoading, setDisputesLoading] = useState(true);
+  const [disputeActionId, setDisputeActionId] = useState<number | null>(null);
+  const [disputeMessage, setDisputeMessage] = useState('');
 
   const { data: stats, isLoading: isStatsLoading } = useGetAdminStats({
     query: { queryKey: getGetAdminStatsQueryKey(), enabled: user?.role === 'admin' }
@@ -51,6 +55,55 @@ export default function Admin() {
       .catch((error: Error) => setCommissionMessage(error.message))
       .finally(() => setCommissionLoading(false));
   }, [user?.role]);
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setDisputesLoading(false);
+      return;
+    }
+
+    fetch('/api/admin/seller-orders?status=disputed', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load disputes.');
+        return response.json();
+      })
+      .then((data) => setDisputedPackages(data))
+      .catch((error: Error) => setDisputeMessage(error.message))
+      .finally(() => setDisputesLoading(false));
+  }, [user?.role]);
+
+  const resolveDispute = async (id: number, resolution: 'release_to_seller' | 'refund_to_buyer') => {
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setDisputeMessage('Admin session not found. Please sign in again.');
+      return;
+    }
+
+    setDisputeActionId(id);
+    setDisputeMessage('');
+    try {
+      const response = await fetch(`/api/admin/seller-orders/${id}/dispute`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ resolution }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not resolve dispute.');
+      setDisputedPackages((current) => current.filter((item) => item.id !== id));
+      setDisputeMessage(data.message || 'Decision recorded.');
+    } catch (error) {
+      setDisputeMessage(error instanceof Error ? error.message : 'Could not resolve dispute.');
+    } finally {
+      setDisputeActionId(null);
+    }
+  };
 
   const saveCommission = async () => {
     const value = Number(commissionPercent);
@@ -137,6 +190,56 @@ export default function Admin() {
         <p className="mt-3 text-xs text-muted-foreground">
           Example: on a 100 Pi sale, a 5% commission is 5 Pi and the seller share is 95 Pi.
         </p>
+      </section>
+
+      <section className="bg-card border border-border p-6 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+          <div>
+            <h2 className="text-lg font-medium tracking-tight">Dispute Review</h2>
+            <p className="text-sm text-muted-foreground">Review buyer complaints for individual seller packages.</p>
+          </div>
+          <span className="text-sm font-mono">{disputedPackages.length} open</span>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Important: these buttons record an administrative decision only. They do not transfer Pi or issue a refund; payment settlement is a later stage.
+        </p>
+        {disputeMessage && <p className="text-sm text-muted-foreground mb-3" role="status">{disputeMessage}</p>}
+        {disputesLoading ? (
+          <p className="text-sm text-muted-foreground">Loading disputes...</p>
+        ) : disputedPackages.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No open disputes.</p>
+        ) : (
+          <div className="space-y-4">
+            {disputedPackages.map((item) => (
+              <div key={item.id} className="border border-border p-4">
+                <div className="flex flex-wrap justify-between gap-2 mb-2">
+                  <p className="font-medium">Package #{item.id} · Order #{item.orderId}</p>
+                  <p className="font-mono text-sm">{item.subtotal} {item.currency === 'Pi' ? 'π' : item.currency}</p>
+                </div>
+                <p className="text-sm text-muted-foreground mb-1">Buyer: @{item.buyerUsername || 'unknown'} · Seller: @{item.sellerUsername || 'unknown'}</p>
+                <p className="text-sm whitespace-pre-wrap mb-4">{item.disputeReason}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => resolveDispute(item.id, 'release_to_seller')}
+                    disabled={disputeActionId === item.id}
+                    className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+                  >
+                    Release decision
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resolveDispute(item.id, 'refund_to_buyer')}
+                    disabled={disputeActionId === item.id}
+                    className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50"
+                  >
+                    Refund decision
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Top Stats */}

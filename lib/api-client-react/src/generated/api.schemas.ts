@@ -195,6 +195,10 @@ export interface SellerOrderSummary {
   subtotal: number;
   currency: string;
   status: string;
+  trackingNumber?: string | null;
+  shippingCarrier?: string | null;
+  disputeReason?: string | null;
+  disputeResolution?: string | null;
 }
 
 export interface Order {
