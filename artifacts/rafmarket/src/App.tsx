@@ -13,6 +13,7 @@ import Cart from '@/pages/Cart';
 import Orders from '@/pages/Orders';
 import OrderDetail from '@/pages/OrderDetail';
 import Admin from '@/pages/Admin';
+import SellerOrders from '@/pages/SellerOrders';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
@@ -32,6 +33,7 @@ function Router() {
             <Route path="/cart" component={Cart} />
             <Route path="/orders" component={Orders} />
             <Route path="/orders/:id" component={OrderDetail} />
+            <Route path="/seller/orders" component={SellerOrders} />
             <Route path="/admin" component={Admin} />
             <Route component={NotFound} />
           </Switch>
