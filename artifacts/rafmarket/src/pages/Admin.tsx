@@ -1,4 +1,4 @@
-import { useGetAdminStats, useListAllOrders } from '@workspace/api-client-react';
+import { useGetAdminStats, useListAllOrders, getGetAdminStatsQueryKey, getListAllOrdersQueryKey } from '@workspace/api-client-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLocation } from 'wouter';
 import { useEffect, useState } from 'react';
@@ -15,11 +15,11 @@ export default function Admin() {
   const [commissionMessage, setCommissionMessage] = useState('');
 
   const { data: stats, isLoading: isStatsLoading } = useGetAdminStats({
-    query: { enabled: user?.role === 'admin' }
+    query: { queryKey: getGetAdminStatsQueryKey(), enabled: user?.role === 'admin' }
   });
 
   const { data: ordersData, isLoading: isOrdersLoading } = useListAllOrders({ page: 1 }, {
-    query: { enabled: user?.role === 'admin' }
+    query: { queryKey: getListAllOrdersQueryKey({ page: 1 }), enabled: user?.role === 'admin' }
   });
 
   useEffect(() => {
