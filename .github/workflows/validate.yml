@@ -45,4 +45,4 @@ jobs:
         run: pnpm --filter @workspace/api-server run build
 
       - name: Build web app
-        run: pnpm --filter @workspace/rafmarket run build
+        run: PORT=3000 pnpm --filter @workspace/rafmarket run build
