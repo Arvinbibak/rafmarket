@@ -2,6 +2,8 @@ import { Router, type IRouter } from "express";
 import {
   db,
   ordersTable,
+  sellerOrdersTable,
+  platformSettingsTable,
   cartItemsTable,
   productsTable,
   usersTable,
@@ -17,6 +19,8 @@ import {
 } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
+
+// Seller suborders snapshot each seller's share at the moment the parent order is created.
 
 const ORDER_STATUSES = [
   "pending",
@@ -40,6 +44,7 @@ type PaymentMethod =
 
 type OrderItem = {
   productId: number;
+  sellerId?: number;
   productName: string;
   price: number;
   currency: string;
@@ -77,6 +82,34 @@ function toOrder(
       row.createdAt,
     updatedAt:
       row.updatedAt,
+  };
+}
+
+
+async function toOrderWithSellerOrders(
+  row: typeof ordersTable.$inferSelect,
+  buyerUsername?: string | null,
+) {
+  const sellerRows = await db
+    .select({
+      sellerOrder: sellerOrdersTable,
+      sellerUsername: usersTable.piUsername,
+    })
+    .from(sellerOrdersTable)
+    .leftJoin(usersTable, eq(sellerOrdersTable.sellerId, usersTable.id))
+    .where(eq(sellerOrdersTable.orderId, row.id));
+
+  return {
+    ...toOrder(row, buyerUsername),
+    sellerOrders: sellerRows.map(({ sellerOrder, sellerUsername }) => ({
+      id: sellerOrder.id,
+      sellerId: sellerOrder.sellerId,
+      sellerUsername: sellerUsername ?? null,
+      items: sellerOrder.items,
+      subtotal: Number(sellerOrder.subtotal),
+      currency: sellerOrder.currency,
+      status: sellerOrder.status,
+    })),
   };
 }
 
@@ -391,6 +424,8 @@ router.post(
       items.push({
         productId:
           product.id,
+        sellerId:
+          product.sellerId,
         productName:
           product.name,
         price,
@@ -492,32 +527,82 @@ router.post(
        Create order.
        ----------------------------------------------------- */
 
-    const [order] =
-      await db
+    const [commissionSetting] = await db
+      .select()
+      .from(platformSettingsTable)
+      .where(eq(platformSettingsTable.key, "commission_percent"))
+      .limit(1);
+    const commissionPercent = commissionSetting
+      ? Number(commissionSetting.value)
+      : 5;
+
+    if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 30) {
+      res.status(500).json({ error: "Marketplace commission setting is invalid" });
+      return;
+    }
+
+    const itemsBySeller = new Map<number, OrderItem[]>();
+    for (const item of items) {
+      if (!item.sellerId) {
+        res.status(409).json({
+          error: "A product is missing its seller",
+          productId: item.productId,
+        });
+        return;
+      }
+      const sellerItems = itemsBySeller.get(item.sellerId) ?? [];
+      sellerItems.push(item);
+      itemsBySeller.set(item.sellerId, sellerItems);
+    }
+
+    const order = await db.transaction(async (tx) => {
+      const [createdOrder] = await tx
         .insert(ordersTable)
         .values({
-          userId:
-            req.user!.id,
+          userId: req.user!.id,
           items,
-          total:
-            total.toFixed(6),
-          currency:
-            productCurrency,
-          paymentMethod:
-            method,
-          status:
-            "pending",
-          shippingAddress:
-            safeShippingAddress,
-          notes:
-            safeNotes,
+          total: total.toFixed(6),
+          currency: productCurrency,
+          paymentMethod: method,
+          status: "pending",
+          shippingAddress: safeShippingAddress,
+          notes: safeNotes,
         })
         .returning();
 
+      if (!createdOrder) return null;
+
+      for (const [sellerId, sellerItems] of itemsBySeller) {
+        const subtotal = sellerItems.reduce(
+          (sum, item) => sum + item.price * item.quantity,
+          0,
+        );
+        const commissionAmount = Math.round(
+          subtotal * commissionPercent / 100 * 1_000_000,
+        ) / 1_000_000;
+        const sellerAmount = Math.round(
+          (subtotal - commissionAmount) * 1_000_000,
+        ) / 1_000_000;
+
+        await tx.insert(sellerOrdersTable).values({
+          orderId: createdOrder.id,
+          sellerId,
+          items: sellerItems.map(({ sellerId: _sellerId, ...item }) => item),
+          subtotal: subtotal.toFixed(6),
+          commissionPercent: commissionPercent.toFixed(4),
+          commissionAmount: commissionAmount.toFixed(6),
+          sellerAmount: sellerAmount.toFixed(6),
+          currency: productCurrency,
+          status: "pending",
+        });
+      }
+
+      return createdOrder;
+    });
+
     if (!order) {
       res.status(500).json({
-        error:
-          "Failed to create order",
+        error: "Failed to create order",
       });
       return;
     }
@@ -580,7 +665,7 @@ router.post(
     }
 
     res.status(201).json(
-      toOrder(
+      await toOrderWithSellerOrders(
         order,
         req.user!.piUsername,
       ),
@@ -643,7 +728,7 @@ router.get(
     }
 
     res.json(
-      toOrder(
+      await toOrderWithSellerOrders(
         order,
         req.user!.piUsername,
       ),

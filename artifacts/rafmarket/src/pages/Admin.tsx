@@ -1,4 +1,4 @@
-import { useGetAdminStats, useListAllOrders } from '@workspace/api-client-react';
+import { useGetAdminStats, useListAllOrders, getGetAdminStatsQueryKey, getListAllOrdersQueryKey } from '@workspace/api-client-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLocation } from 'wouter';
 import { useEffect, useState } from 'react';
@@ -15,11 +15,11 @@ export default function Admin() {
   const [commissionMessage, setCommissionMessage] = useState('');
 
   const { data: stats, isLoading: isStatsLoading } = useGetAdminStats({
-    query: { enabled: user?.role === 'admin' }
+    query: { queryKey: getGetAdminStatsQueryKey(), enabled: user?.role === 'admin' }
   });
 
   const { data: ordersData, isLoading: isOrdersLoading } = useListAllOrders({ page: 1 }, {
-    query: { enabled: user?.role === 'admin' }
+    query: { queryKey: getListAllOrdersQueryKey({ page: 1 }), enabled: user?.role === 'admin' }
   });
 
   useEffect(() => {
@@ -226,7 +226,7 @@ export default function Admin() {
               <BarChart data={stats.ordersByStatus} layout="vertical" margin={{ top: 0, right: 0, left: 30, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
                 <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }} />
-                <YAxis type="category" dataKey="status" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'hsl(var(--foreground))', textTransform: 'capitalize' }} />
+                <YAxis type="category" dataKey="status" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'hsl(var(--foreground))' }} />
                 <Tooltip 
                   cursor={{ fill: 'hsl(var(--muted))' }}
                   contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '0' }}

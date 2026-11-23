@@ -8,6 +8,7 @@ import {
 import {
   db,
   ordersTable,
+  sellerOrdersTable,
   paymentsTable,
 } from "@workspace/db";
 
@@ -907,6 +908,11 @@ router.post(
             ),
           ),
         );
+
+      await db
+        .update(sellerOrdersTable)
+        .set({ status: "paid" })
+        .where(eq(sellerOrdersTable.orderId, order.id));
 
       logger.info(
         {
