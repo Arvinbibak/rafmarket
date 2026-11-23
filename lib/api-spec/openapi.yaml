@@ -821,6 +821,8 @@ components:
       properties:
         productId:
           type: integer
+        sellerId:
+          type: integer
         productName:
           type: string
         price:
@@ -846,6 +848,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/OrderItem"
+        sellerOrders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SellerOrderSummary"
         total:
           type: number
         currency:
@@ -868,9 +874,34 @@ components:
           type: string
           format: date-time
 
+    SellerOrderSummary:
+      type: object
+      required: [id, sellerId, items, subtotal, currency, status]
+      properties:
+        id:
+          type: integer
+        sellerId:
+          type: integer
+        sellerUsername:
+          type: [ "string", "null" ]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        subtotal:
+          type: number
+        currency:
+          type: string
+        status:
+          type: string
+
     OrderInput:
       type: object
+      required: [paymentMethod]
       properties:
+        paymentMethod:
+          type: string
+          enum: [pi, irr]
         shippingAddress:
           type: string
         notes:
