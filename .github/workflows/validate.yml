@@ -35,6 +35,9 @@ jobs:
       - name: Typecheck API server
         run: pnpm --filter @workspace/api-server run typecheck
 
+      - name: Build API client declarations
+        run: pnpm exec tsc --build lib/api-client-react/tsconfig.json
+
       - name: Typecheck web app
         run: pnpm --filter @workspace/rafmarket run typecheck
 
