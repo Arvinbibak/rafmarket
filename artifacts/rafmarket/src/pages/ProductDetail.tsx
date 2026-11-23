@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useRoute, useLocation, useParams } from 'wouter';
-import { useGetProduct, useAddCartItem, getGetCartQueryKey } from '@workspace/api-client-react';
+import { useGetProduct, useAddCartItem, getGetCartQueryKey, getGetProductQueryKey } from '@workspace/api-client-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ export default function ProductDetail() {
   const queryClient = useQueryClient();
 
   const { data: product, isLoading } = useGetProduct(id || '', {
-    query: { enabled: !!id }
+    query: { queryKey: getGetProductQueryKey(id || ''), enabled: !!id }
   });
 
   const addToCart = useAddCartItem();
