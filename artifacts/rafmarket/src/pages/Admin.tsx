@@ -1,7 +1,7 @@
 import { useGetAdminStats, useListAllOrders } from '@workspace/api-client-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLocation } from 'wouter';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { Users, Package, ShoppingBag, Coins } from 'lucide-react';
 import { format } from 'date-fns';
@@ -9,6 +9,10 @@ import { format } from 'date-fns';
 export default function Admin() {
   const { user, isLoading: isAuthLoading } = useAuth();
   const [, setLocation] = useLocation();
+  const [commissionPercent, setCommissionPercent] = useState('5');
+  const [commissionLoading, setCommissionLoading] = useState(true);
+  const [commissionSaving, setCommissionSaving] = useState(false);
+  const [commissionMessage, setCommissionMessage] = useState('');
 
   const { data: stats, isLoading: isStatsLoading } = useGetAdminStats({
     query: { enabled: user?.role === 'admin' }
@@ -24,6 +28,65 @@ export default function Admin() {
     }
   }, [user, isAuthLoading, setLocation]);
 
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setCommissionMessage('Admin session not found. Please sign in again.');
+      setCommissionLoading(false);
+      return;
+    }
+
+    fetch('/api/admin/commission', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load commission settings.');
+        return response.json();
+      })
+      .then((data: { commissionPercent: number }) => {
+        setCommissionPercent(String(data.commissionPercent));
+      })
+      .catch((error: Error) => setCommissionMessage(error.message))
+      .finally(() => setCommissionLoading(false));
+  }, [user?.role]);
+
+  const saveCommission = async () => {
+    const value = Number(commissionPercent);
+    if (!Number.isFinite(value) || value < 0 || value > 30) {
+      setCommissionMessage('Enter a commission between 0 and 30 percent.');
+      return;
+    }
+
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setCommissionMessage('Admin session not found. Please sign in again.');
+      return;
+    }
+
+    setCommissionSaving(true);
+    setCommissionMessage('');
+    try {
+      const response = await fetch('/api/admin/commission', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ commissionPercent: value }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save commission.');
+      setCommissionPercent(String(data.commissionPercent));
+      setCommissionMessage('Commission setting saved.');
+    } catch (error) {
+      setCommissionMessage(error instanceof Error ? error.message : 'Could not save commission.');
+    } finally {
+      setCommissionSaving(false);
+    }
+  };
+
   if (isAuthLoading || isStatsLoading) {
     return <div className="container mx-auto px-4 py-12">Loading admin dashboard...</div>;
   }
@@ -33,6 +96,48 @@ export default function Admin() {
   return (
     <div className="container mx-auto px-4 py-12">
       <h1 className="text-3xl font-medium tracking-tight mb-8">Admin Dashboard</h1>
+
+      <section className="bg-card border border-border p-6 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-end gap-4 sm:justify-between">
+          <div>
+            <h2 className="text-lg font-medium tracking-tight mb-2">Marketplace Commission</h2>
+            <p className="text-sm text-muted-foreground">
+              Default commission for new orders. Allowed range: 0% to 30%.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label htmlFor="commission-percent" className="text-sm font-medium">Commission</label>
+            <div className="flex items-center gap-2">
+              <input
+                id="commission-percent"
+                type="number"
+                min="0"
+                max="30"
+                step="0.1"
+                value={commissionPercent}
+                onChange={(event) => setCommissionPercent(event.target.value)}
+                disabled={commissionLoading || commissionSaving}
+                className="w-24 rounded-md border border-border bg-background px-3 py-2 text-right font-mono"
+              />
+              <span className="text-muted-foreground">%</span>
+            </div>
+            <button
+              type="button"
+              onClick={saveCommission}
+              disabled={commissionLoading || commissionSaving}
+              className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+            >
+              {commissionSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </div>
+        {commissionMessage && (
+          <p className="mt-3 text-sm text-muted-foreground" role="status">{commissionMessage}</p>
+        )}
+        <p className="mt-3 text-xs text-muted-foreground">
+          Example: on a 100 Pi sale, a 5% commission is 5 Pi and the seller share is 95 Pi.
+        </p>
+      </section>
 
       {/* Top Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
