@@ -1,4 +1,4 @@
-import { Router, type IRouter, type Request, type Response } from "express";
+import { Router, type IRouter } from "express";
 import { alias } from "drizzle-orm/pg-core";
 import { and, desc, eq } from "drizzle-orm";
 import { db, ordersTable, sellerOrdersTable, usersTable } from "@workspace/db";
