@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://pi-market-hub--bibakarvin.replit.app/api/:path*"
+      "destination": "https://rafmarket-api-server.vercel.app/api/:path*"
     }
   ]
 }
