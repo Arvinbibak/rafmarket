@@ -329,56 +329,26 @@ router.post(
 router.post(
   "/payments/pi/initiate",
   requireAuth,
-  async (
-    req: Request,
-    res: Response,
-  ): Promise<void> => {
-    const {
-      orderId,
-      paymentId,
-      piPaymentId,
-      amount,
-      memo,
-      metadata,
-    } = req.body as {
+  async (req: Request, res: Response): Promise<void> => {
+    const { orderId, paymentId, piPaymentId, amount } = req.body as {
       orderId?: unknown;
       paymentId?: unknown;
       piPaymentId?: unknown;
       amount?: unknown;
-      memo?: unknown;
-      metadata?: unknown;
     };
 
-    const parsedOrderId =
-      parsePositiveInteger(orderId);
-
-    if (!parsedOrderId) {
-      res.status(400).json({
-        error: "Valid orderId is required",
-      });
-      return;
-    }
-
+    const parsedOrderId = parsePositiveInteger(orderId);
     const cleanPiPaymentId =
       typeof piPaymentId === "string"
         ? piPaymentId.trim()
         : typeof paymentId === "string"
           ? paymentId.trim()
           : "";
+    const parsedAmount = parsePositiveNumber(amount);
 
-    if (!cleanPiPaymentId) {
+    if (!parsedOrderId || !cleanPiPaymentId || !parsedAmount) {
       res.status(400).json({
-        error: "Pi paymentId is required",
-      });
-      return;
-    }
-
-    const parsedAmount =
-      parsePositiveNumber(amount);
-
-    if (!parsedAmount) {
-      res.status(400).json({
-        error: "Valid amount is required",
+        error: "Valid orderId, Pi paymentId and amount are required",
       });
       return;
     }
@@ -386,79 +356,134 @@ router.post(
     const [order] = await db
       .select()
       .from(ordersTable)
-      .where(
-        and(
-          eq(
-            ordersTable.id,
-            parsedOrderId,
-          ),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
-      );
+      .where(and(
+        eq(ordersTable.id, parsedOrderId),
+        eq(ordersTable.userId, req.user!.id),
+      ));
 
     if (!order) {
-      res.status(404).json({
-        error: "Order not found",
-      });
+      res.status(404).json({ error: "Order not found" });
       return;
     }
 
-    if (order.status === "cancelled") {
-      res.status(409).json({
-        error: "Order is cancelled",
-      });
+    if (order.status === "cancelled" || order.status === "paid") {
+      res.status(409).json({ error: "Order is not awaiting payment" });
       return;
     }
 
-    const existingPayment =
-      await findUserPayment(
-        cleanPiPaymentId,
-        req.user!.id,
+    const expectedAmount = Number(order.total);
+    if (!Number.isFinite(expectedAmount) ||
+        Math.abs(parsedAmount - expectedAmount) > 0.00000001) {
+      res.status(409).json({ error: "Payment amount does not match the order total" });
+      return;
+    }
+
+    try {
+      // Verify the payment details directly with Pi before approving it.
+      const verifyResponse = await piFetch(
+        `${PI_API_BASE}/payments/${encodeURIComponent(cleanPiPaymentId)}`,
+        { method: "GET", headers: getPiHeaders() },
+      );
+      const verifyText = await verifyResponse.text();
+      const parsedPayment = parseJson(verifyText);
+      const piPayment =
+        parsedPayment && typeof parsedPayment === "object"
+          ? parsedPayment as PiPaymentResponse
+          : null;
+
+      if (!verifyResponse.ok || !piPayment) {
+        logger.warn(
+          { status: verifyResponse.status, piPaymentId: cleanPiPaymentId, response: verifyText },
+          "Pi payment details could not be verified before approval",
+        );
+        res.status(502).json({ error: "Could not verify payment details with Pi" });
+        return;
+      }
+
+      if (typeof piPayment.amount !== "number" ||
+          Math.abs(piPayment.amount - expectedAmount) > 0.00000001) {
+        res.status(409).json({ error: "Pi payment amount does not match the order total" });
+        return;
+      }
+
+      const metadata =
+        piPayment.metadata && typeof piPayment.metadata === "object"
+          ? piPayment.metadata as Record<string, unknown>
+          : null;
+      if (!metadata || Number(metadata.orderId) !== order.id) {
+        res.status(409).json({ error: "Pi payment metadata does not match this order" });
+        return;
+      }
+
+      if (piPayment.status?.cancelled || piPayment.status?.user_cancelled) {
+        res.status(409).json({ error: "Pi payment was cancelled" });
+        return;
+      }
+
+      let payment = await findUserPayment(cleanPiPaymentId, req.user!.id);
+      if (payment && payment.orderId !== order.id) {
+        res.status(409).json({ error: "Pi payment is already linked to another order" });
+        return;
+      }
+
+      if (!payment) {
+        const [created] = await db
+          .insert(paymentsTable)
+          .values({
+            orderId: order.id,
+            userId: req.user!.id,
+            method: "pi",
+            amount: String(expectedAmount),
+            currency: "Pi",
+            status: "pending",
+            providerPaymentId: cleanPiPaymentId,
+            providerReference: typeof piPayment.memo === "string" ? piPayment.memo : null,
+          })
+          .returning();
+        payment = created;
+      }
+
+      if (!piPayment.status?.developer_approved) {
+        const approveResponse = await piFetch(
+          `${PI_API_BASE}/payments/${encodeURIComponent(cleanPiPaymentId)}/approve`,
+          { method: "POST", headers: getPiHeaders() },
+        );
+        const approveText = await approveResponse.text();
+        const approveData = parseJson(approveText);
+
+        if (!approveResponse.ok) {
+          logger.warn(
+            { status: approveResponse.status, piPaymentId: cleanPiPaymentId, data: approveData },
+            "Pi payment server approval failed",
+          );
+          res.status(502).json({ error: "Pi payment server approval failed" });
+          return;
+        }
+      }
+
+      await db
+        .update(paymentsTable)
+        .set({ status: "approved", providerPaymentId: cleanPiPaymentId })
+        .where(eq(paymentsTable.id, payment.id));
+
+      logger.info(
+        { paymentId: payment.id, piPaymentId: cleanPiPaymentId, orderId: order.id },
+        "Pi payment verified and approved by server",
       );
 
-    if (existingPayment) {
       res.json({
         success: true,
-        payment: existingPayment,
-      });
-      return;
-    }
-
-    const [payment] =
-      await db
-        .insert(paymentsTable)
-        .values({
-          orderId: order.id,
-          userId: req.user!.id,
-          method: "pi",
-          amount: String(parsedAmount),
-          currency: "Pi",
-          status: "pending",
-          providerPaymentId:
-            cleanPiPaymentId,
-          providerReference:
-            typeof memo === "string"
-              ? memo.trim()
-              : null,
-        })
-        .returning();
-
-    logger.info(
-      {
+        status: "approved",
         paymentId: payment.id,
         piPaymentId: cleanPiPaymentId,
-        orderId: order.id,
-      },
-      "Pi payment initiated",
-    );
-
-    res.status(201).json({
-      success: true,
-      payment,
-    });
+      });
+    } catch (err) {
+      logger.error(
+        { err, piPaymentId: cleanPiPaymentId, orderId: order.id },
+        "Pi payment verification or approval failed",
+      );
+      res.status(502).json({ error: "Unable to verify or approve Pi payment" });
+    }
   },
 );
 
