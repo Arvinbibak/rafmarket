@@ -5,9 +5,60 @@ import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
 
+const DEFAULT_CATEGORIES = [
+  {
+    name: "Electronics",
+    slug: "electronics",
+    description: "Phones, computers, accessories and consumer electronics.",
+  },
+  {
+    name: "Fashion & Accessories",
+    slug: "fashion-accessories",
+    description: "Clothing, footwear, bags and personal accessories.",
+  },
+  {
+    name: "Home & Living",
+    slug: "home-living",
+    description: "Furniture, home decor, kitchen and household goods.",
+  },
+  {
+    name: "Tools & Machinery",
+    slug: "tools-machinery",
+    description: "Hand tools, workshop equipment and industrial machinery.",
+  },
+  {
+    name: "Automotive & Parts",
+    slug: "automotive-parts",
+    description: "Vehicle parts, accessories and maintenance supplies.",
+  },
+  {
+    name: "Art & Collectibles",
+    slug: "art-collectibles",
+    description: "Artwork, handmade crafts and collectible items.",
+  },
+  {
+    name: "Digital Services",
+    slug: "digital-services",
+    description: "Digital products, software and online services.",
+  },
+  {
+    name: "Other",
+    slug: "other",
+    description: "Products and services that do not fit another category.",
+  },
+];
+
 // GET /categories
 router.get("/categories", async (_req, res): Promise<void> => {
-  const categories = await db.select().from(categoriesTable).orderBy(categoriesTable.name);
+  let categories = await db.select().from(categoriesTable).orderBy(categoriesTable.name);
+
+  if (categories.length === 0) {
+    await db
+      .insert(categoriesTable)
+      .values(DEFAULT_CATEGORIES)
+      .onConflictDoNothing({ target: categoriesTable.slug });
+    categories = await db.select().from(categoriesTable).orderBy(categoriesTable.name);
+  }
 
   // Get product counts
   const counts = await db
