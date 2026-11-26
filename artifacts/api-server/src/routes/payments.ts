@@ -428,8 +428,11 @@ router.post(
         return;
       }
 
-      if (typeof piPayment.amount !== "number" ||
-          Math.abs(piPayment.amount - expectedAmount) > 0.00000001) {
+      if (
+        typeof piPayment.amount !== "number" ||
+        !Number.isFinite(piPayment.amount) ||
+        Math.abs(piPayment.amount - expectedAmount) > 0.00000001
+      ) {
         res.status(409).json({ error: "Pi payment amount does not match the order total" });
         return;
       }
@@ -555,6 +558,7 @@ router.post(
         !approvedPayment.status?.developer_approved ||
         approvedMetadata == null ||
         Number(approvedMetadata.orderId) !== order.id ||
+        !Number.isFinite(Number(approvedPayment.amount)) ||
         Math.abs(Number(approvedPayment.amount) - expectedAmount) > 0.00000001
       ) {
         logger.warn(
@@ -817,6 +821,7 @@ router.post(
         !finalPayment.status?.developer_completed ||
         !finalPayment.status.transaction_verified ||
         finalPayment.transaction?.txid !== verifiedTxid ||
+        !Number.isFinite(Number(finalPayment.amount)) ||
         Math.abs(Number(finalPayment.amount) - expectedAmount) > 0.00000001
       ) {
         logger.warn(
@@ -947,6 +952,7 @@ router.post(
         piPayment.user_uid !== req.user!.piUid ||
         !metadata ||
         Number(metadata.orderId) !== order.id ||
+        !Number.isFinite(Number(piPayment.amount)) ||
         Math.abs(Number(piPayment.amount) - Number(order.total)) > 0.00000001 ||
         !(piPayment.status?.cancelled || piPayment.status?.user_cancelled)
       ) {
