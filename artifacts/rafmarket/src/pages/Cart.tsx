@@ -91,18 +91,52 @@ export default function Cart() {
           setLocation(`/orders/${order.id}`);
         },
         onCancel: async (paymentId: string) => {
-          setPaymentStatus(null);
-          setIsProcessing(false);
-          await cancelPayment.mutateAsync({
-            data: { paymentId, orderId: order.id }
-          });
-          toast({ title: 'Payment Cancelled', description: 'You cancelled the payment.', variant: 'destructive' });
+          setPaymentStatus('Verifying cancellation with Pi...');
+          try {
+            await cancelPayment.mutateAsync({
+              data: { paymentId, orderId: order.id }
+            });
+            toast({
+              title: 'Payment Cancelled',
+              description: 'Pi confirmed the cancellation and the reserved stock was released.',
+              variant: 'destructive'
+            });
+          } catch (error) {
+            console.error('Pi cancellation could not be confirmed:', error);
+            toast({
+              title: 'Cancellation needs attention',
+              description: 'Pi has not confirmed cancellation to the server yet. The order and stock remain reserved until it is verified.',
+              variant: 'destructive'
+            });
+          } finally {
+            setPaymentStatus(null);
+            setIsProcessing(false);
+          }
         },
-        onError: (error: any) => {
+        onError: async (error: any, payment?: any) => {
+          console.error('Pi payment error:', error, payment);
+          let cancellationConfirmed = false;
+
+          if (payment?.identifier) {
+            try {
+              await cancelPayment.mutateAsync({
+                data: { paymentId: payment.identifier, orderId: order.id }
+              });
+              cancellationConfirmed = true;
+            } catch (cancelError) {
+              console.warn('Pi payment is not confirmed cancelled:', cancelError);
+            }
+          }
+
           setPaymentStatus(null);
           setIsProcessing(false);
-          console.error(error);
-          toast({ title: 'Payment Error', description: 'An error occurred during payment.', variant: 'destructive' });
+          toast({
+            title: cancellationConfirmed ? 'Payment Cancelled' : 'Payment Needs Recovery',
+            description: cancellationConfirmed
+              ? 'Pi confirmed the cancellation and the reserved stock was released.'
+              : 'The server could not verify a cancellation. Do not retry this order until its Pi payment status has been recovered.',
+            variant: 'destructive'
+          });
         }
       };
 
