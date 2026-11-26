@@ -12,6 +12,8 @@ import {
   eq,
   and,
   inArray,
+  gte,
+  sql,
 } from "drizzle-orm";
 import {
   requireAuth,
@@ -559,50 +561,82 @@ router.post(
       itemsBySeller.set(item.sellerId, sellerItems);
     }
 
-    const order = await db.transaction(async (tx) => {
-      const [createdOrder] = await tx
-        .insert(ordersTable)
-        .values({
-          userId: req.user!.id,
-          items,
-          total: total.toFixed(6),
-          currency: productCurrency,
-          paymentMethod: method,
-          status: "pending",
-          shippingAddress: safeShippingAddress,
-          notes: safeNotes,
-        })
-        .returning();
+    let order: typeof ordersTable.$inferSelect | null;
+    try {
+      order = await db.transaction(async (tx) => {
+        // Reserve every product atomically with order creation. A concurrent checkout
+        // cannot oversell stock, and any failed reservation rolls the whole transaction back.
+        for (const item of items) {
+          const [reserved] = await tx
+            .update(productsTable)
+            .set({
+              stock: sql`${productsTable.stock} - ${item.quantity}`,
+              status: sql<string>`CASE WHEN ${productsTable.stock} - ${item.quantity} <= 0 THEN 'sold_out' ELSE 'active' END`,
+            })
+            .where(and(
+              eq(productsTable.id, item.productId),
+              eq(productsTable.status, "active"),
+              gte(productsTable.stock, item.quantity),
+            ))
+            .returning({ id: productsTable.id });
 
-      if (!createdOrder) return null;
+          if (!reserved) {
+            throw new Error("STOCK_RESERVATION_FAILED");
+          }
+        }
 
-      for (const [sellerId, sellerItems] of itemsBySeller) {
-        const subtotal = sellerItems.reduce(
-          (sum, item) => sum + item.price * item.quantity,
-          0,
-        );
-        const commissionAmount = Math.round(
-          subtotal * commissionPercent / 100 * 1_000_000,
-        ) / 1_000_000;
-        const sellerAmount = Math.round(
-          (subtotal - commissionAmount) * 1_000_000,
-        ) / 1_000_000;
+        const [createdOrder] = await tx
+          .insert(ordersTable)
+          .values({
+            userId: req.user!.id,
+            items,
+            total: total.toFixed(6),
+            currency: productCurrency,
+            paymentMethod: method,
+            status: "pending",
+            shippingAddress: safeShippingAddress,
+            notes: safeNotes,
+          })
+          .returning();
 
-        await tx.insert(sellerOrdersTable).values({
-          orderId: createdOrder.id,
-          sellerId,
-          items: sellerItems.map(({ sellerId: _sellerId, ...item }) => item),
-          subtotal: subtotal.toFixed(6),
-          commissionPercent: commissionPercent.toFixed(4),
-          commissionAmount: commissionAmount.toFixed(6),
-          sellerAmount: sellerAmount.toFixed(6),
-          currency: productCurrency,
-          status: "pending",
+        if (!createdOrder) return null;
+
+        for (const [sellerId, sellerItems] of itemsBySeller) {
+          const subtotal = sellerItems.reduce(
+            (sum, item) => sum + item.price * item.quantity,
+            0,
+          );
+          const commissionAmount = Math.round(
+            subtotal * commissionPercent / 100 * 1_000_000,
+          ) / 1_000_000;
+          const sellerAmount = Math.round(
+            (subtotal - commissionAmount) * 1_000_000,
+          ) / 1_000_000;
+
+          await tx.insert(sellerOrdersTable).values({
+            orderId: createdOrder.id,
+            sellerId,
+            items: sellerItems.map(({ sellerId: _sellerId, ...item }) => item),
+            subtotal: subtotal.toFixed(6),
+            commissionPercent: commissionPercent.toFixed(4),
+            commissionAmount: commissionAmount.toFixed(6),
+            sellerAmount: sellerAmount.toFixed(6),
+            currency: productCurrency,
+            status: "pending",
+          });
+        }
+
+        return createdOrder;
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "STOCK_RESERVATION_FAILED") {
+        res.status(409).json({
+          error: "Product stock changed during checkout. Please refresh your cart and try again.",
         });
+        return;
       }
-
-      return createdOrder;
-    });
+      throw error;
+    }
 
     if (!order) {
       res.status(500).json({
@@ -612,7 +646,7 @@ router.post(
     }
 
     /* -----------------------------------------------------
-       Clear cart only after order creation.
+       Clear cart only after order creation and stock reservation.
        ----------------------------------------------------- */
 
     await db
@@ -623,50 +657,6 @@ router.post(
           req.user!.id,
         ),
       );
-
-    /* -----------------------------------------------------
-       Reduce stock.
-       ----------------------------------------------------- */
-
-    for (
-      const item of items
-    ) {
-      const product =
-        productMap.get(
-          item.productId,
-        );
-
-      if (!product) {
-        continue;
-      }
-
-      const newStock =
-        product.stock -
-        item.quantity;
-
-      await db
-        .update(productsTable)
-        .set({
-          stock:
-            newStock,
-          status:
-            newStock === 0
-              ? "sold_out"
-              : "active",
-        })
-        .where(
-          and(
-            eq(
-              productsTable.id,
-              item.productId,
-            ),
-            eq(
-              productsTable.stock,
-              product.stock,
-            ),
-          ),
-        );
-    }
 
     res.status(201).json(
       await toOrderWithSellerOrders(
