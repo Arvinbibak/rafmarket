@@ -43,7 +43,7 @@ export default function SellerProducts() {
 
   const { data: productPage, isLoading } = useListProducts(
     { limit: 100 },
-    { enabled: !!user },
+    { queryKey: ['/api/products', { limit: 100 }], enabled: !!user },
   );
   const { data: categories } = useListCategories();
   const createProduct = useCreateProduct();
