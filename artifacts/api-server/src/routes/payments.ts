@@ -414,16 +414,12 @@ router.post(
         return;
       }
 
-      if (piPayment.identifier !== cleanPiPaymentId) {
-        res.status(409).json({ error: "Pi payment identifier does not match" });
-        return;
-      }
-
       if (
         piPayment.identifier !== cleanPiPaymentId ||
+        !req.user!.piUid ||
         piPayment.user_uid !== req.user!.piUid
       ) {
-        res.status(409).json({ error: "Pi payment does not belong to this Pi account" });
+        res.status(409).json({ error: "Pi payment does not belong to the signed-in user" });
         return;
       }
 
@@ -728,9 +724,10 @@ router.post(
 
       if (
         piPayment.identifier !== sdkPaymentId ||
+        !req.user!.piUid ||
         piPayment.user_uid !== req.user!.piUid
       ) {
-        res.status(409).json({ error: "Pi payment does not belong to this Pi account" });
+        res.status(409).json({ error: "Pi payment does not belong to the signed-in user" });
         return;
       }
 
@@ -810,6 +807,7 @@ router.post(
         !finalResponse.ok ||
         !finalPayment ||
         finalPayment.identifier !== sdkPaymentId ||
+        !req.user!.piUid ||
         finalPayment.user_uid !== req.user!.piUid ||
         !finalPayment.status?.developer_completed ||
         !finalPayment.status.transaction_verified ||
