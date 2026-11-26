@@ -10,9 +10,10 @@ import {
   ordersTable,
   sellerOrdersTable,
   paymentsTable,
+  productsTable,
 } from "@workspace/db";
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { logger } from "../lib/logger.js";
 
@@ -836,5 +837,144 @@ router.post(
     }
   },
 );
+
+/* -------------------------------------------------------------------------- */
+/* POST /payments/pi/cancel                                                   */
+/* -------------------------------------------------------------------------- */
+
+router.post(
+  "/payments/pi/cancel",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const { paymentId, orderId } = req.body as {
+      paymentId?: unknown;
+      orderId?: unknown;
+    };
+    const cleanPiPaymentId = typeof paymentId === "string" ? paymentId.trim() : "";
+    const parsedOrderId = parsePositiveInteger(orderId);
+
+    if (!cleanPiPaymentId || !parsedOrderId) {
+      res.status(400).json({ error: "Pi paymentId and valid orderId are required" });
+      return;
+    }
+
+    const [order] = await db.select().from(ordersTable).where(and(
+      eq(ordersTable.id, parsedOrderId),
+      eq(ordersTable.userId, req.user!.id),
+    ));
+
+    if (!order) {
+      res.status(404).json({ error: "Order not found" });
+      return;
+    }
+
+    if (order.status === "cancelled") {
+      res.json({ success: true, status: "cancelled", orderId: order.id, idempotent: true });
+      return;
+    }
+
+    if (order.status === "paid" || order.status !== "pending") {
+      res.status(409).json({ error: "Only unpaid pending orders can be cancelled" });
+      return;
+    }
+
+    try {
+      // The browser callback is not trusted: confirm cancellation with Pi itself.
+      const piResponse = await piFetch(
+        `${PI_API_BASE}/payments/${encodeURIComponent(cleanPiPaymentId)}`,
+        { method: "GET", headers: getPiHeaders() },
+      );
+      const piText = await piResponse.text();
+      const parsed = parseJson(piText);
+      const piPayment =
+        parsed && typeof parsed === "object"
+          ? parsed as PiPaymentResponse
+          : null;
+      const metadata =
+        piPayment?.metadata && typeof piPayment.metadata === "object"
+          ? piPayment.metadata as Record<string, unknown>
+          : null;
+
+      if (
+        !piResponse.ok ||
+        !piPayment ||
+        piPayment.identifier !== cleanPiPaymentId ||
+        !metadata ||
+        Number(metadata.orderId) !== order.id ||
+        Math.abs(Number(piPayment.amount) - Number(order.total)) > 0.00000001 ||
+        !(piPayment.status?.cancelled || piPayment.status?.user_cancelled)
+      ) {
+        logger.warn(
+          { status: piResponse.status, piPaymentId: cleanPiPaymentId, response: piText },
+          "Pi cancellation could not be verified",
+        );
+        res.status(409).json({ error: "Pi has not confirmed cancellation for this order" });
+        return;
+      }
+
+      await db.transaction(async (tx) => {
+        const [cancelledOrder] = await tx.update(ordersTable)
+          .set({ status: "cancelled" })
+          .where(and(
+            eq(ordersTable.id, order.id),
+            eq(ordersTable.userId, req.user!.id),
+            eq(ordersTable.status, "pending"),
+          ))
+          .returning({ id: ordersTable.id });
+
+        if (!cancelledOrder) {
+          throw new Error("Order status changed before cancellation could be committed");
+        }
+
+        const [payment] = await tx.select().from(paymentsTable).where(and(
+          eq(paymentsTable.providerPaymentId, cleanPiPaymentId),
+          eq(paymentsTable.userId, req.user!.id),
+          eq(paymentsTable.orderId, order.id),
+        ));
+
+        if (payment && payment.status !== "paid") {
+          await tx.update(paymentsTable)
+            .set({ status: "cancelled" })
+            .where(eq(paymentsTable.id, payment.id));
+        }
+
+        for (const item of order.items ?? []) {
+          if (!Number.isInteger(item.productId) || !Number.isInteger(item.quantity) || item.quantity <= 0) {
+            throw new Error("Order contains invalid product quantity data");
+          }
+          await tx.update(productsTable)
+            .set({
+              stock: sql`${productsTable.stock} + ${item.quantity}`,
+              status: "active",
+            })
+            .where(eq(productsTable.id, item.productId));
+        }
+
+        await tx.update(sellerOrdersTable)
+          .set({ status: "cancelled" })
+          .where(eq(sellerOrdersTable.orderId, order.id));
+      });
+
+      logger.info(
+        { orderId: order.id, piPaymentId: cleanPiPaymentId },
+        "Cancelled Pi order and restored reserved stock",
+      );
+
+      res.json({
+        success: true,
+        status: "cancelled",
+        orderId: order.id,
+        message: "Pi cancellation verified; order cancelled and stock restored",
+      });
+    } catch (err) {
+      logger.error(
+        { err, orderId: order.id, piPaymentId: cleanPiPaymentId },
+        "Pi payment cancellation failed",
+      );
+      res.status(502).json({ error: "Unable to cancel order safely" });
+    }
+  },
+);
+
 
 export default router;
