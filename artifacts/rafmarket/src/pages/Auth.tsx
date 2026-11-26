@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
 import { useAuth } from '@/contexts/AuthContext';
-import { useAuthenticateWithPi } from '@workspace/api-client-react';
+import { useAuthenticateWithPi, useCompletePayment } from '@workspace/api-client-react';
 import { Button } from '@/components/ui/button';
 import { Loader2, ShieldCheck } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 export default function Auth() {
   const { user, login } = useAuth();
   const [, setLocation] = useLocation();
   const authenticateWithPi = useAuthenticateWithPi();
+  const completePayment = useCompletePayment();
+  const { toast } = useToast();
   const [isSdkLoading, setIsSdkLoading] = useState(false);
 
   useEffect(() => {
@@ -27,21 +30,77 @@ export default function Auth() {
       // Initialize the Pi SDK in Testnet Sandbox before authentication.
       await window.Pi.init({ version: '2.0', sandbox: true });
 
-      // 1. Authenticate with Pi SDK
+      // 1. Authenticate with Pi SDK and capture any interrupted payment.
       const scopes = ['username', 'payments'];
-      const onIncompletePaymentFound = (payment: any) => {
-        console.log('Incomplete payment found', payment);
+      let sessionReady = false;
+      let pendingPayment: any = null;
+      let recoveryInProgress = false;
+
+      const recoverIncompletePayment = async (payment: any) => {
+        if (!sessionReady) {
+          pendingPayment = payment;
+          return;
+        }
+        if (recoveryInProgress) return;
+
+        const paymentId = typeof payment?.identifier === 'string' ? payment.identifier : '';
+        const txid = typeof payment?.transaction?.txid === 'string' ? payment.transaction.txid : '';
+        if (!paymentId || !txid) {
+          toast({
+            title: 'Previous Pi payment needs attention',
+            description: 'Pi has not supplied a verified transaction ID yet. Do not start another payment until this is resolved.',
+            variant: 'destructive'
+          });
+          return;
+        }
+
+        recoveryInProgress = true;
+        try {
+          const orderId = Number(payment?.metadata?.orderId);
+          await completePayment.mutateAsync({
+            data: {
+              paymentId,
+              txid,
+              ...(Number.isInteger(orderId) && orderId > 0 ? { orderId } : {})
+            }
+          });
+          toast({
+            title: 'Previous Pi payment recovered',
+            description: 'Pi confirmed the transaction and RAFMARKET updated the order.'
+          });
+        } catch (error) {
+          console.error('Incomplete Pi payment recovery failed:', error, payment);
+          toast({
+            title: 'Previous Pi payment is still pending',
+            description: 'The server could not yet confirm completion with Pi. Do not pay for the same order again; sign in again later to retry recovery.',
+            variant: 'destructive'
+          });
+        } finally {
+          recoveryInProgress = false;
+        }
       };
-      
+
+      const onIncompletePaymentFound = (payment: any) => {
+        console.warn('Pi SDK reported an incomplete payment; attempting server-side recovery.', payment);
+        pendingPayment = payment;
+        if (sessionReady) void recoverIncompletePayment(payment);
+      };
+
       const authResults = await window.Pi.authenticate(scopes, onIncompletePaymentFound);
-      
-      // 2. Send accessToken to our backend
+
+      // 2. Verify the Pi access token and establish the RAFMARKET session.
       const authResult = await authenticateWithPi.mutateAsync({
         data: { accessToken: authResults.accessToken }
       });
-      
-      // 3. Login locally
+
+      // 3. Login locally before calling the authenticated payment endpoint.
       login(authResult.token, authResult.user);
+      sessionReady = true;
+
+      if (pendingPayment) {
+        await recoverIncompletePayment(pendingPayment);
+      }
+
       setLocation('/');
       
     } catch (err) {
