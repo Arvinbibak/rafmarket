@@ -630,16 +630,8 @@ router.post(
 router.post(
   "/payments/pi/complete",
   requireAuth,
-  async (
-    req: Request,
-    res: Response,
-  ): Promise<void> => {
-    const {
-      paymentId,
-      piPaymentId,
-      orderId,
-      txid,
-    } = req.body as {
+  async (req: Request, res: Response): Promise<void> => {
+    const { paymentId, piPaymentId, orderId, txid } = req.body as {
       paymentId?: unknown;
       piPaymentId?: unknown;
       orderId?: unknown;
@@ -652,86 +644,52 @@ router.post(
         : typeof piPaymentId === "string"
           ? piPaymentId.trim()
           : "";
+    const cleanTxid = typeof txid === "string" ? txid.trim() : "";
 
-    const cleanTxid =
-      typeof txid === "string"
-        ? txid.trim()
-        : "";
-
-    if (!sdkPaymentId) {
-      res.status(400).json({
-        error: "paymentId is required",
-      });
+    if (!sdkPaymentId || !cleanTxid) {
+      res.status(400).json({ error: "Pi paymentId and txid are required" });
       return;
     }
 
-    if (!cleanTxid) {
-      res.status(400).json({
-        error: "txid is required",
-      });
+    const payment = await findUserPayment(sdkPaymentId, req.user!.id);
+    if (!payment || payment.method !== "pi") {
+      res.status(404).json({ error: "Pi payment not found" });
       return;
     }
 
-    const payment =
-      await findUserPayment(
-        sdkPaymentId,
-        req.user!.id,
-      );
-
-    if (!payment) {
-      res.status(404).json({
-        error: "Payment not found",
-      });
-      return;
-    }
-
-    if (payment.method !== "pi") {
-      res.status(400).json({
-        error: "Payment is not a Pi payment",
-      });
+    // Completion must use the exact provider ID, never a local database ID.
+    if (payment.providerPaymentId !== sdkPaymentId) {
+      res.status(409).json({ error: "Payment provider ID does not match" });
       return;
     }
 
     const [order] = await db
       .select()
       .from(ordersTable)
-      .where(
-        and(
-          eq(
-            ordersTable.id,
-            payment.orderId,
-          ),
-          eq(
-            ordersTable.userId,
-            req.user!.id,
-          ),
-        ),
-      );
+      .where(and(
+        eq(ordersTable.id, payment.orderId),
+        eq(ordersTable.userId, req.user!.id),
+      ));
 
     if (!order) {
-      res.status(404).json({
-        error: "Order not found",
-      });
+      res.status(404).json({ error: "Order not found" });
       return;
     }
 
-    if (
-      orderId != null &&
-      Number(orderId) !== order.id
-    ) {
-      res.status(400).json({
-        error:
-          "Payment does not belong to this order",
-      });
+    if (orderId != null && Number(orderId) !== order.id) {
+      res.status(409).json({ error: "Payment does not belong to this order" });
       return;
     }
 
-    // Idempotent retry: a completed payment may be acknowledged only
-    // when the same Pi payment and transaction are already on this order.
-    if (order.status === "paid" || payment.status === "paid") {
+    if (order.status === "cancelled") {
+      res.status(409).json({ error: "Order is cancelled" });
+      return;
+    }
+
+    if (payment.status === "paid" || order.status === "paid") {
       if (
-        order.status === "paid" &&
         payment.status === "paid" &&
+        order.status === "paid" &&
         order.piPaymentId === sdkPaymentId &&
         order.piTxid === cleanTxid &&
         payment.providerReference === cleanTxid
@@ -743,313 +701,195 @@ router.post(
           piPaymentId: sdkPaymentId,
           txid: cleanTxid,
           orderId: order.id,
-          message: "Pi payment was already completed",
+          idempotent: true,
         });
         return;
       }
 
-      res.status(409).json({
-        error: "Order or payment is already completed with different payment details",
-      });
-      return;
-    }
-
-    if (order.status === "cancelled" || payment.status === "cancelled") {
-      res.status(409).json({ error: "Order or payment is cancelled" });
+      res.status(409).json({ error: "Order or payment is already completed with different details" });
       return;
     }
 
     const expectedAmount = Number(order.total);
+    const recordedAmount = Number(payment.amount);
     if (
+      order.paymentMethod !== "pi" ||
+      order.currency !== "Pi" ||
+      payment.currency !== "Pi" ||
       !Number.isFinite(expectedAmount) ||
-      Math.abs(Number(payment.amount) - expectedAmount) > 0.00000001
+      !Number.isFinite(recordedAmount) ||
+      Math.abs(recordedAmount - expectedAmount) > 0.00000001
     ) {
-      res.status(409).json({ error: "Stored payment amount does not match the order total" });
+      res.status(409).json({ error: "Local payment amount or currency does not match the order" });
       return;
     }
 
     try {
-      const verifyResponse =
-        await piFetch(
-          `${PI_API_BASE}/payments/${encodeURIComponent(
-            sdkPaymentId,
-          )}`,
-          {
-            method: "GET",
-            headers: getPiHeaders(),
-          },
-        );
+      const verifyResponse = await piFetch(
+        `${PI_API_BASE}/payments/${encodeURIComponent(sdkPaymentId)}`,
+        { method: "GET", headers: getPiHeaders() },
+      );
+      const verifyText = await verifyResponse.text();
+      const parsed = parseJson(verifyText);
+      const piPayment =
+        parsed && typeof parsed === "object"
+          ? parsed as PiPaymentResponse
+          : null;
 
-      const verifyText =
-        await verifyResponse.text();
-
-      let paymentData:
-        | PiPaymentResponse
-        | null = null;
-
-      const parsedVerify =
-        parseJson(verifyText);
-
-      if (
-        parsedVerify &&
-        typeof parsedVerify === "object"
-      ) {
-        paymentData =
-          parsedVerify as PiPaymentResponse;
-      }
-
-      if (!verifyResponse.ok) {
+      if (!verifyResponse.ok || !piPayment) {
         logger.warn(
-          {
-            status:
-              verifyResponse.status,
-            piPaymentId:
-              sdkPaymentId,
-            response:
-              verifyText,
-          },
-          "Pi payment verification failed",
+          { status: verifyResponse.status, piPaymentId: sdkPaymentId, response: verifyText },
+          "Pi payment lookup failed during completion",
         );
-
-        res.status(502).json({
-          error:
-            "Pi payment verification failed",
-        });
+        res.status(502).json({ error: "Could not verify payment with Pi" });
         return;
       }
 
-      const piStatus =
-        paymentData?.status;
+      if (piPayment.identifier !== sdkPaymentId) {
+        res.status(409).json({ error: "Pi payment identifier does not match" });
+        return;
+      }
 
-      if (
-        typeof paymentData?.amount !== "number" ||
-        Math.abs(paymentData.amount - expectedAmount) > 0.00000001
-      ) {
-        res.status(409).json({
-          error: "Pi payment amount does not match the order total",
-        });
+      const piAmount = Number(piPayment.amount);
+      if (!Number.isFinite(piAmount) || Math.abs(piAmount - expectedAmount) > 0.00000001) {
+        res.status(409).json({ error: "Pi payment amount does not match the order total" });
         return;
       }
 
       const metadata =
-        paymentData?.metadata && typeof paymentData.metadata === "object"
-          ? paymentData.metadata as Record<string, unknown>
+        piPayment.metadata && typeof piPayment.metadata === "object"
+          ? piPayment.metadata as Record<string, unknown>
           : null;
       if (!metadata || Number(metadata.orderId) !== order.id) {
-        res.status(409).json({
-          error: "Pi payment metadata does not match this order",
-        });
+        res.status(409).json({ error: "Pi payment metadata does not match this order" });
         return;
       }
 
-      if (
-        piStatus?.cancelled ||
-        piStatus?.user_cancelled
-      ) {
-        await db
-          .update(paymentsTable)
-          .set({
-            status: "cancelled",
-            providerPaymentId:
-              sdkPaymentId,
-            providerReference:
-              cleanTxid,
-          })
-          .where(
-            eq(
-              paymentsTable.id,
-              payment.id,
-            ),
-          );
-
-        res.status(409).json({
-          error:
-            "Pi payment was cancelled",
-        });
+      const piStatus = piPayment.status;
+      if (piStatus?.cancelled || piStatus?.user_cancelled) {
+        await db.update(paymentsTable)
+          .set({ status: "cancelled" })
+          .where(eq(paymentsTable.id, payment.id));
+        res.status(409).json({ error: "Pi payment was cancelled" });
         return;
       }
 
-      if (
-        !piStatus?.developer_approved &&
-        !piStatus?.developer_completed
-      ) {
-        res.status(409).json({
-          error:
-            "Pi payment has not been approved by the developer",
-        });
+      if (!piStatus?.developer_approved || !piStatus.transaction_verified) {
+        res.status(409).json({ error: "Pi payment is not approved and transaction-verified yet" });
         return;
       }
 
-      if (
-        !piStatus?.transaction_verified
-      ) {
-        res.status(409).json({
-          error:
-            "Pi transaction has not been verified",
-        });
-        return;
-      }
-
-      const transactionTxid =
-        paymentData?.transaction?.txid;
-
-      if (
-        !transactionTxid ||
-        transactionTxid !== cleanTxid
-      ) {
+      const verifiedTxid = piPayment.transaction?.txid;
+      if (!verifiedTxid || verifiedTxid !== cleanTxid) {
         logger.warn(
-          {
-            piPaymentId:
-              sdkPaymentId,
-            expectedTxid:
-              transactionTxid,
-            receivedTxid:
-              cleanTxid,
-          },
-          "Pi transaction ID mismatch",
+          { piPaymentId: sdkPaymentId, expectedTxid: verifiedTxid ?? null, receivedTxid: cleanTxid },
+          "Pi transaction ID is missing or does not match",
         );
-
-        res.status(409).json({
-          error:
-            "Transaction ID does not match Pi payment",
-        });
+        res.status(409).json({ error: "Transaction ID does not match the verified Pi transaction" });
         return;
       }
 
-      let completeData: unknown = null;
-
-      // Pi may already have completed this payment if a previous request
-      // succeeded but the browser lost the response. Do not complete twice.
-      if (!piStatus?.developer_completed) {
-        const completeResponse =
-          await piFetch(
-            `${PI_API_BASE}/payments/${encodeURIComponent(
-              sdkPaymentId,
-            )}/complete`,
-            {
-              method: "POST",
-              headers: getPiHeaders(),
-              body: JSON.stringify({
-                txid: cleanTxid,
-              }),
-            },
-          );
-
-        const completeText =
-          await completeResponse.text();
-
-        completeData =
-          parseJson(completeText);
-
+      // Pi may already have completed the payment if a previous request lost its response.
+      if (!piStatus.developer_completed) {
+        const completeResponse = await piFetch(
+          `${PI_API_BASE}/payments/${encodeURIComponent(sdkPaymentId)}/complete`,
+          {
+            method: "POST",
+            headers: getPiHeaders(),
+            body: JSON.stringify({ txid: verifiedTxid }),
+          },
+        );
+        const completeText = await completeResponse.text();
         if (!completeResponse.ok) {
-        logger.warn(
-          {
-            status:
-              completeResponse.status,
-            piPaymentId:
-              sdkPaymentId,
-            completeData,
-            response:
-              completeText,
-          },
-          "Pi payment completion failed",
-        );
-
-          res.status(502).json({
-            error:
-              "Pi payment completion failed",
-          });
-          return;
-        }
-
-        const completedPayment =
-          completeData && typeof completeData === "object"
-            ? completeData as PiPaymentResponse
-            : null;
-        if (!completedPayment?.status?.developer_completed) {
-          logger.error(
-            { piPaymentId: sdkPaymentId, completeData },
-            "Pi API did not confirm developer completion",
+          logger.warn(
+            { status: completeResponse.status, piPaymentId: sdkPaymentId, response: completeText },
+            "Pi payment completion request failed",
           );
-          res.status(502).json({
-            error: "Pi did not confirm payment completion",
-          });
+          res.status(502).json({ error: "Pi payment completion failed; retry after checking payment status" });
           return;
         }
+      }
+
+      // Read Pi again after completion; local orders are paid only after Pi confirms it.
+      const finalResponse = await piFetch(
+        `${PI_API_BASE}/payments/${encodeURIComponent(sdkPaymentId)}`,
+        { method: "GET", headers: getPiHeaders() },
+      );
+      const finalText = await finalResponse.text();
+      const finalParsed = parseJson(finalText);
+      const finalPayment =
+        finalParsed && typeof finalParsed === "object"
+          ? finalParsed as PiPaymentResponse
+          : null;
+
+      if (
+        !finalResponse.ok ||
+        !finalPayment ||
+        finalPayment.identifier !== sdkPaymentId ||
+        !finalPayment.status?.developer_completed ||
+        !finalPayment.status.transaction_verified ||
+        finalPayment.transaction?.txid !== verifiedTxid ||
+        Math.abs(Number(finalPayment.amount) - expectedAmount) > 0.00000001
+      ) {
+        logger.warn(
+          { status: finalResponse.status, piPaymentId: sdkPaymentId, response: finalText },
+          "Pi did not confirm completed payment after completion request",
+        );
+        res.status(502).json({ error: "Pi has not confirmed final payment completion yet" });
+        return;
       }
 
       const paidAt = new Date();
-
       await db.transaction(async (tx) => {
-        await tx
-          .update(paymentsTable)
+        await tx.update(paymentsTable)
           .set({
             status: "paid",
             providerPaymentId: sdkPaymentId,
-            providerReference: cleanTxid,
+            providerReference: verifiedTxid,
             paidAt,
           })
-          .where(eq(paymentsTable.id, payment.id));
+          .where(and(
+            eq(paymentsTable.id, payment.id),
+            eq(paymentsTable.userId, req.user!.id),
+            eq(paymentsTable.orderId, order.id),
+          ));
 
-        await tx
-          .update(ordersTable)
+        await tx.update(ordersTable)
           .set({
             status: "paid",
             piPaymentId: sdkPaymentId,
-            piTxid: cleanTxid,
+            piTxid: verifiedTxid,
           })
-          .where(
-            and(
-              eq(ordersTable.id, order.id),
-              eq(ordersTable.userId, req.user!.id),
-            ),
-          );
+          .where(and(
+            eq(ordersTable.id, order.id),
+            eq(ordersTable.userId, req.user!.id),
+          ));
 
-        await tx
-          .update(sellerOrdersTable)
+        await tx.update(sellerOrdersTable)
           .set({ status: "paid" })
           .where(eq(sellerOrdersTable.orderId, order.id));
       });
 
       logger.info(
-        {
-          paymentId: payment.id,
-          piPaymentId:
-            sdkPaymentId,
-          txid: cleanTxid,
-          orderId: order.id,
-        },
-        "Pi payment completed successfully",
+        { paymentId: payment.id, piPaymentId: sdkPaymentId, txid: verifiedTxid, orderId: order.id },
+        "Pi payment completed and confirmed",
       );
 
       res.json({
         success: true,
         status: "paid",
         paymentId: payment.id,
-        piPaymentId:
-          sdkPaymentId,
-        txid: cleanTxid,
+        piPaymentId: sdkPaymentId,
+        txid: verifiedTxid,
         orderId: order.id,
-        message:
-          "Pi payment verified and completed",
-        data: completeData,
+        message: "Pi payment verified and completed",
       });
     } catch (err) {
       logger.error(
-        {
-          err,
-          paymentId: payment.id,
-          piPaymentId:
-            sdkPaymentId,
-          orderId: order.id,
-        },
+        { err, paymentId: payment.id, piPaymentId: sdkPaymentId, orderId: order.id },
         "Pi payment completion failed",
       );
-
-      res.status(502).json({
-        error:
-          "Unable to verify or complete Pi payment",
-      });
+      res.status(502).json({ error: "Unable to verify or complete Pi payment" });
     }
   },
 );
