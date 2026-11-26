@@ -940,6 +940,7 @@ router.post(
         !piResponse.ok ||
         !piPayment ||
         piPayment.identifier !== cleanPiPaymentId ||
+        piPayment.user_uid !== req.user!.piUid ||
         !metadata ||
         Number(metadata.orderId) !== order.id ||
         Math.abs(Number(piPayment.amount) - Number(order.total)) > 0.00000001 ||
