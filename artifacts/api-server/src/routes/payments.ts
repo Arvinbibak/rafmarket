@@ -726,6 +726,48 @@ router.post(
       return;
     }
 
+    // Idempotent retry: a completed payment may be acknowledged only
+    // when the same Pi payment and transaction are already on this order.
+    if (order.status === "paid" || payment.status === "paid") {
+      if (
+        order.status === "paid" &&
+        payment.status === "paid" &&
+        order.piPaymentId === sdkPaymentId &&
+        order.piTxid === cleanTxid &&
+        payment.providerReference === cleanTxid
+      ) {
+        res.json({
+          success: true,
+          status: "paid",
+          paymentId: payment.id,
+          piPaymentId: sdkPaymentId,
+          txid: cleanTxid,
+          orderId: order.id,
+          message: "Pi payment was already completed",
+        });
+        return;
+      }
+
+      res.status(409).json({
+        error: "Order or payment is already completed with different payment details",
+      });
+      return;
+    }
+
+    if (order.status === "cancelled" || payment.status === "cancelled") {
+      res.status(409).json({ error: "Order or payment is cancelled" });
+      return;
+    }
+
+    const expectedAmount = Number(order.total);
+    if (
+      !Number.isFinite(expectedAmount) ||
+      Math.abs(Number(payment.amount) - expectedAmount) > 0.00000001
+    ) {
+      res.status(409).json({ error: "Stored payment amount does not match the order total" });
+      return;
+    }
+
     try {
       const verifyResponse =
         await piFetch(
@@ -780,6 +822,27 @@ router.post(
         paymentData?.status;
 
       if (
+        typeof paymentData?.amount !== "number" ||
+        Math.abs(paymentData.amount - expectedAmount) > 0.00000001
+      ) {
+        res.status(409).json({
+          error: "Pi payment amount does not match the order total",
+        });
+        return;
+      }
+
+      const metadata =
+        paymentData?.metadata && typeof paymentData.metadata === "object"
+          ? paymentData.metadata as Record<string, unknown>
+          : null;
+      if (!metadata || Number(metadata.orderId) !== order.id) {
+        res.status(409).json({
+          error: "Pi payment metadata does not match this order",
+        });
+        return;
+      }
+
+      if (
         piStatus?.cancelled ||
         piStatus?.user_cancelled
       ) {
@@ -807,7 +870,8 @@ router.post(
       }
 
       if (
-        !piStatus?.developer_approved
+        !piStatus?.developer_approved &&
+        !piStatus?.developer_completed
       ) {
         res.status(409).json({
           error:
@@ -830,7 +894,7 @@ router.post(
         paymentData?.transaction?.txid;
 
       if (
-        transactionTxid &&
+        !transactionTxid ||
         transactionTxid !== cleanTxid
       ) {
         logger.warn(
@@ -852,27 +916,32 @@ router.post(
         return;
       }
 
-      const completeResponse =
-        await piFetch(
-          `${PI_API_BASE}/payments/${encodeURIComponent(
-            sdkPaymentId,
-          )}/complete`,
-          {
-            method: "POST",
-            headers: getPiHeaders(),
-            body: JSON.stringify({
-              txid: cleanTxid,
-            }),
-          },
-        );
+      let completeData: unknown = null;
 
-      const completeText =
-        await completeResponse.text();
+      // Pi may already have completed this payment if a previous request
+      // succeeded but the browser lost the response. Do not complete twice.
+      if (!piStatus?.developer_completed) {
+        const completeResponse =
+          await piFetch(
+            `${PI_API_BASE}/payments/${encodeURIComponent(
+              sdkPaymentId,
+            )}/complete`,
+            {
+              method: "POST",
+              headers: getPiHeaders(),
+              body: JSON.stringify({
+                txid: cleanTxid,
+              }),
+            },
+          );
 
-      const completeData =
-        parseJson(completeText);
+        const completeText =
+          await completeResponse.text();
 
-      if (!completeResponse.ok) {
+        completeData =
+          parseJson(completeText);
+
+        if (!completeResponse.ok) {
         logger.warn(
           {
             status:
@@ -886,58 +955,61 @@ router.post(
           "Pi payment completion failed",
         );
 
-        res.status(502).json({
-          error:
-            "Pi payment completion failed",
-        });
-        return;
+          res.status(502).json({
+            error:
+              "Pi payment completion failed",
+          });
+          return;
+        }
+
+        const completedPayment =
+          completeData && typeof completeData === "object"
+            ? completeData as PiPaymentResponse
+            : null;
+        if (!completedPayment?.status?.developer_completed) {
+          logger.error(
+            { piPaymentId: sdkPaymentId, completeData },
+            "Pi API did not confirm developer completion",
+          );
+          res.status(502).json({
+            error: "Pi did not confirm payment completion",
+          });
+          return;
+        }
       }
 
       const paidAt = new Date();
 
-      await db
-        .update(paymentsTable)
-        .set({
-          status: "paid",
-          providerPaymentId:
-            sdkPaymentId,
-          providerReference:
-            cleanTxid,
-          paidAt,
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        );
+      await db.transaction(async (tx) => {
+        await tx
+          .update(paymentsTable)
+          .set({
+            status: "paid",
+            providerPaymentId: sdkPaymentId,
+            providerReference: cleanTxid,
+            paidAt,
+          })
+          .where(eq(paymentsTable.id, payment.id));
 
-      await db
-        .update(ordersTable)
-        .set({
-          status: "paid",
-          piPaymentId:
-            sdkPaymentId,
-          piTxid:
-            cleanTxid,
-        })
-        .where(
-          and(
-            eq(
-              ordersTable.id,
-              order.id,
+        await tx
+          .update(ordersTable)
+          .set({
+            status: "paid",
+            piPaymentId: sdkPaymentId,
+            piTxid: cleanTxid,
+          })
+          .where(
+            and(
+              eq(ordersTable.id, order.id),
+              eq(ordersTable.userId, req.user!.id),
             ),
-            eq(
-              ordersTable.userId,
-              req.user!.id,
-            ),
-          ),
-        );
+          );
 
-      await db
-        .update(sellerOrdersTable)
-        .set({ status: "paid" })
-        .where(eq(sellerOrdersTable.orderId, order.id));
+        await tx
+          .update(sellerOrdersTable)
+          .set({ status: "paid" })
+          .where(eq(sellerOrdersTable.orderId, order.id));
+      });
 
       logger.info(
         {
