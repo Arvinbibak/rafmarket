@@ -242,6 +242,13 @@ router.post(
     const method =
       paymentMethod as PaymentMethod;
 
+    if (method === "pi" && !process.env.PI_API_KEY) {
+      res.status(503).json({
+        error: "Pi payments are not configured on the server yet",
+      });
+      return;
+    }
+
     const safeShippingAddress =
       typeof shippingAddress ===
       "string"
