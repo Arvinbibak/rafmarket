@@ -37,6 +37,7 @@ type PiTransaction = {
 
 type PiPaymentResponse = {
   identifier?: string;
+  user_uid?: string;
   amount?: number;
   memo?: string;
   metadata?: unknown;
@@ -412,6 +413,14 @@ router.post(
         return;
       }
 
+      if (
+        piPayment.identifier !== cleanPiPaymentId ||
+        piPayment.user_uid !== req.user!.piUid
+      ) {
+        res.status(409).json({ error: "Pi payment does not belong to this Pi account" });
+        return;
+      }
+
       if (typeof piPayment.amount !== "number" ||
           Math.abs(piPayment.amount - expectedAmount) > 0.00000001) {
         res.status(409).json({ error: "Pi payment amount does not match the order total" });
@@ -675,8 +684,11 @@ router.post(
         return;
       }
 
-      if (piPayment.identifier !== sdkPaymentId) {
-        res.status(409).json({ error: "Pi payment identifier does not match" });
+      if (
+        piPayment.identifier !== sdkPaymentId ||
+        piPayment.user_uid !== req.user!.piUid
+      ) {
+        res.status(409).json({ error: "Pi payment does not belong to this Pi account" });
         return;
       }
 
@@ -756,6 +768,7 @@ router.post(
         !finalResponse.ok ||
         !finalPayment ||
         finalPayment.identifier !== sdkPaymentId ||
+        finalPayment.user_uid !== req.user!.piUid ||
         !finalPayment.status?.developer_completed ||
         !finalPayment.status.transaction_verified ||
         finalPayment.transaction?.txid !== verifiedTxid ||
