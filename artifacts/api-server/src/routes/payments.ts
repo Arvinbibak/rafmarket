@@ -938,6 +938,7 @@ router.post(
         !piResponse.ok ||
         !piPayment ||
         piPayment.identifier !== cleanPiPaymentId ||
+        !req.user!.piUid ||
         piPayment.user_uid !== req.user!.piUid ||
         !metadata ||
         Number(metadata.orderId) !== order.id ||
