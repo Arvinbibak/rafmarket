@@ -12,6 +12,8 @@ import {
   eq,
   and,
   inArray,
+  gte,
+  sql,
 } from "drizzle-orm";
 import {
   requireAuth,
@@ -239,6 +241,13 @@ router.post(
 
     const method =
       paymentMethod as PaymentMethod;
+
+    if (method === "pi" && !process.env.PI_API_KEY) {
+      res.status(503).json({
+        error: "Pi payments are not configured on the server yet",
+      });
+      return;
+    }
 
     const safeShippingAddress =
       typeof shippingAddress ===
@@ -559,113 +568,113 @@ router.post(
       itemsBySeller.set(item.sellerId, sellerItems);
     }
 
-    const order = await db.transaction(async (tx) => {
-      const [createdOrder] = await tx
-        .insert(ordersTable)
-        .values({
-          userId: req.user!.id,
-          items,
-          total: total.toFixed(6),
-          currency: productCurrency,
-          paymentMethod: method,
-          status: "pending",
-          shippingAddress: safeShippingAddress,
-          notes: safeNotes,
-        })
-        .returning();
+    let order: typeof ordersTable.$inferSelect | null;
+    try {
+      order = await db.transaction(async (tx) => {
+        // Claim the cart snapshot inside this transaction so two concurrent checkout
+        // requests cannot create duplicate orders from the same cart.
+        const claimedCart = await tx
+          .delete(cartItemsTable)
+          .where(eq(cartItemsTable.userId, req.user!.id))
+          .returning({
+            productId: cartItemsTable.productId,
+            quantity: cartItemsTable.quantity,
+          });
+        const expectedCartSnapshot = cartItems
+          .map((item) => `${item.productId}:${item.quantity}`)
+          .sort();
+        const claimedCartSnapshot = claimedCart
+          .map((item) => `${item.productId}:${item.quantity}`)
+          .sort();
+        if (JSON.stringify(claimedCartSnapshot) !== JSON.stringify(expectedCartSnapshot)) {
+          throw new Error("CART_CHANGED_DURING_CHECKOUT");
+        }
 
-      if (!createdOrder) return null;
+        // Reserve every product atomically with order creation. A concurrent checkout
+        // cannot oversell stock, and any failed reservation rolls the whole transaction back.
+        for (const item of items) {
+          const [reserved] = await tx
+            .update(productsTable)
+            .set({
+              stock: sql`${productsTable.stock} - ${item.quantity}`,
+              status: sql<string>`CASE WHEN ${productsTable.stock} - ${item.quantity} <= 0 THEN 'sold_out' ELSE 'active' END`,
+            })
+            .where(and(
+              eq(productsTable.id, item.productId),
+              eq(productsTable.status, "active"),
+              gte(productsTable.stock, item.quantity),
+            ))
+            .returning({ id: productsTable.id });
 
-      for (const [sellerId, sellerItems] of itemsBySeller) {
-        const subtotal = sellerItems.reduce(
-          (sum, item) => sum + item.price * item.quantity,
-          0,
-        );
-        const commissionAmount = Math.round(
-          subtotal * commissionPercent / 100 * 1_000_000,
-        ) / 1_000_000;
-        const sellerAmount = Math.round(
-          (subtotal - commissionAmount) * 1_000_000,
-        ) / 1_000_000;
+          if (!reserved) {
+            throw new Error("STOCK_RESERVATION_FAILED");
+          }
+        }
 
-        await tx.insert(sellerOrdersTable).values({
-          orderId: createdOrder.id,
-          sellerId,
-          items: sellerItems.map(({ sellerId: _sellerId, ...item }) => item),
-          subtotal: subtotal.toFixed(6),
-          commissionPercent: commissionPercent.toFixed(4),
-          commissionAmount: commissionAmount.toFixed(6),
-          sellerAmount: sellerAmount.toFixed(6),
-          currency: productCurrency,
-          status: "pending",
+        const [createdOrder] = await tx
+          .insert(ordersTable)
+          .values({
+            userId: req.user!.id,
+            items,
+            total: total.toFixed(6),
+            currency: productCurrency,
+            paymentMethod: method,
+            status: "pending",
+            shippingAddress: safeShippingAddress,
+            notes: safeNotes,
+          })
+          .returning();
+
+        if (!createdOrder) return null;
+
+        for (const [sellerId, sellerItems] of itemsBySeller) {
+          const subtotal = sellerItems.reduce(
+            (sum, item) => sum + item.price * item.quantity,
+            0,
+          );
+          const commissionAmount = Math.round(
+            subtotal * commissionPercent / 100 * 1_000_000,
+          ) / 1_000_000;
+          const sellerAmount = Math.round(
+            (subtotal - commissionAmount) * 1_000_000,
+          ) / 1_000_000;
+
+          await tx.insert(sellerOrdersTable).values({
+            orderId: createdOrder.id,
+            sellerId,
+            items: sellerItems.map(({ sellerId: _sellerId, ...item }) => item),
+            subtotal: subtotal.toFixed(6),
+            commissionPercent: commissionPercent.toFixed(4),
+            commissionAmount: commissionAmount.toFixed(6),
+            sellerAmount: sellerAmount.toFixed(6),
+            currency: productCurrency,
+            status: "pending",
+          });
+        }
+
+        return createdOrder;
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "STOCK_RESERVATION_FAILED") {
+        res.status(409).json({
+          error: "Product stock changed during checkout. Please refresh your cart and try again.",
         });
+        return;
       }
-
-      return createdOrder;
-    });
+      if (error instanceof Error && error.message === "CART_CHANGED_DURING_CHECKOUT") {
+        res.status(409).json({
+          error: "Your cart changed during checkout. Please refresh it and try again.",
+        });
+        return;
+      }
+      throw error;
+    }
 
     if (!order) {
       res.status(500).json({
         error: "Failed to create order",
       });
       return;
-    }
-
-    /* -----------------------------------------------------
-       Clear cart only after order creation.
-       ----------------------------------------------------- */
-
-    await db
-      .delete(cartItemsTable)
-      .where(
-        eq(
-          cartItemsTable.userId,
-          req.user!.id,
-        ),
-      );
-
-    /* -----------------------------------------------------
-       Reduce stock.
-       ----------------------------------------------------- */
-
-    for (
-      const item of items
-    ) {
-      const product =
-        productMap.get(
-          item.productId,
-        );
-
-      if (!product) {
-        continue;
-      }
-
-      const newStock =
-        product.stock -
-        item.quantity;
-
-      await db
-        .update(productsTable)
-        .set({
-          stock:
-            newStock,
-          status:
-            newStock === 0
-              ? "sold_out"
-              : "active",
-        })
-        .where(
-          and(
-            eq(
-              productsTable.id,
-              item.productId,
-            ),
-            eq(
-              productsTable.stock,
-              product.stock,
-            ),
-          ),
-        );
     }
 
     res.status(201).json(
