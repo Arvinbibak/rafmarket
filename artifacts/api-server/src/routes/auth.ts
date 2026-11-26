@@ -64,6 +64,13 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
       return;
     }
 
+    const configuredAdminUid = process.env.ADMIN_PI_UID?.trim();
+    const configuredAdminUsername = process.env.ADMIN_PI_USERNAME?.trim().toLowerCase();
+    const isConfiguredAdmin =
+      (!!configuredAdminUid && piUser.uid === configuredAdminUid) ||
+      (!!configuredAdminUsername &&
+        piUser.username.trim().toLowerCase() === configuredAdminUsername);
+
     let [user] = await db
       .select()
       .from(usersTable)
@@ -75,7 +82,7 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
         .values({
           piUid: piUser.uid,
           piUsername: piUser.username,
-          role: "user",
+          role: isConfiguredAdmin ? "admin" : "user",
         })
         .returning();
 
@@ -85,16 +92,25 @@ router.post("/auth/pi", async (req, res): Promise<void> => {
         { userId: user.id },
         "New user registered",
       );
-    } else if (user.piUsername !== piUser.username) {
-      const [updated] = await db
-        .update(usersTable)
-        .set({
-          piUsername: piUser.username,
-        })
-        .where(eq(usersTable.id, user.id))
-        .returning();
+    } else {
+      const userUpdates: Partial<typeof usersTable.$inferInsert> = {};
 
-      user = updated;
+      if (user.piUsername !== piUser.username) {
+        userUpdates.piUsername = piUser.username;
+      }
+      if (isConfiguredAdmin && user.role !== "admin") {
+        userUpdates.role = "admin";
+      }
+
+      if (Object.keys(userUpdates).length > 0) {
+        const [updated] = await db
+          .update(usersTable)
+          .set(userUpdates)
+          .where(eq(usersTable.id, user.id))
+          .returning();
+
+        user = updated ?? user;
+      }
     }
 
     const token = signToken({
