@@ -219,6 +219,13 @@ router.post(
       return;
     }
 
+    if (method === "pi") {
+      res.status(409).json({
+        error: "Pi payments must use the verified Pi SDK payment flow",
+      });
+      return;
+    }
+
     const parsedAmount =
       parsePositiveNumber(amount);
 
@@ -400,6 +407,11 @@ router.post(
         return;
       }
 
+      if (piPayment.identifier !== cleanPiPaymentId) {
+        res.status(409).json({ error: "Pi payment identifier does not match" });
+        return;
+      }
+
       if (typeof piPayment.amount !== "number" ||
           Math.abs(piPayment.amount - expectedAmount) > 0.00000001) {
         res.status(409).json({ error: "Pi payment amount does not match the order total" });
@@ -421,8 +433,17 @@ router.post(
       }
 
       let payment = await findUserPayment(cleanPiPaymentId, req.user!.id);
-      if (payment && payment.orderId !== order.id) {
-        res.status(409).json({ error: "Pi payment is already linked to another order" });
+      if (
+        payment &&
+        (
+          payment.orderId !== order.id ||
+          payment.method !== "pi" ||
+          payment.providerPaymentId !== cleanPiPaymentId ||
+          payment.currency !== "Pi" ||
+          Math.abs(Number(payment.amount) - expectedAmount) > 0.00000001
+        )
+      ) {
+        res.status(409).json({ error: "Existing payment record does not match this Pi order" });
         return;
       }
 
@@ -449,16 +470,47 @@ router.post(
           { method: "POST", headers: getPiHeaders() },
         );
         const approveText = await approveResponse.text();
-        const approveData = parseJson(approveText);
 
         if (!approveResponse.ok) {
           logger.warn(
-            { status: approveResponse.status, piPaymentId: cleanPiPaymentId, data: approveData },
+            { status: approveResponse.status, piPaymentId: cleanPiPaymentId, response: approveText },
             "Pi payment server approval failed",
           );
           res.status(502).json({ error: "Pi payment server approval failed" });
           return;
         }
+      }
+
+      const approvalCheck = await piFetch(
+        `${PI_API_BASE}/payments/${encodeURIComponent(cleanPiPaymentId)}`,
+        { method: "GET", headers: getPiHeaders() },
+      );
+      const approvalText = await approvalCheck.text();
+      const approvalParsed = parseJson(approvalText);
+      const approvedPayment =
+        approvalParsed && typeof approvalParsed === "object"
+          ? approvalParsed as PiPaymentResponse
+          : null;
+      const approvedMetadata =
+        approvedPayment?.metadata && typeof approvedPayment.metadata === "object"
+          ? approvedPayment.metadata as Record<string, unknown>
+          : null;
+
+      if (
+        !approvalCheck.ok ||
+        !approvedPayment ||
+        approvedPayment.identifier !== cleanPiPaymentId ||
+        !approvedPayment.status?.developer_approved ||
+        approvedMetadata == null ||
+        Number(approvedMetadata.orderId) !== order.id ||
+        Math.abs(Number(approvedPayment.amount) - expectedAmount) > 0.00000001
+      ) {
+        logger.warn(
+          { status: approvalCheck.status, piPaymentId: cleanPiPaymentId, response: approvalText },
+          "Pi server approval could not be confirmed",
+        );
+        res.status(502).json({ error: "Pi server approval could not be confirmed" });
+        return;
       }
 
       await db
@@ -494,132 +546,10 @@ router.post(
 router.post(
   "/payments/pi/approve",
   requireAuth,
-  async (
-    req: Request,
-    res: Response,
-  ): Promise<void> => {
-    const {
-      paymentId,
-      piPaymentId,
-      orderId,
-    } = req.body as {
-      paymentId?: unknown;
-      piPaymentId?: unknown;
-      orderId?: unknown;
-    };
-
-    const cleanPiPaymentId =
-      typeof paymentId === "string"
-        ? paymentId.trim()
-        : typeof piPaymentId === "string"
-          ? piPaymentId.trim()
-          : "";
-
-    if (!cleanPiPaymentId) {
-      res.status(400).json({
-        error: "paymentId is required",
-      });
-      return;
-    }
-
-    const payment =
-      await findUserPayment(
-        cleanPiPaymentId,
-        req.user!.id,
-      );
-
-    if (!payment) {
-      res.status(404).json({
-        error: "Payment not found",
-      });
-      return;
-    }
-
-    if (payment.method !== "pi") {
-      res.status(400).json({
-        error: "Payment is not a Pi payment",
-      });
-      return;
-    }
-
-    if (
-      orderId != null &&
-      Number(orderId) !== payment.orderId
-    ) {
-      res.status(400).json({
-        error:
-          "Payment does not belong to this order",
-      });
-      return;
-    }
-
-    try {
-      const response = await piFetch(
-        `${PI_API_BASE}/payments/${encodeURIComponent(
-          cleanPiPaymentId,
-        )}/approve`,
-        {
-          method: "POST",
-          headers: getPiHeaders(),
-        },
-      );
-
-      const text = await response.text();
-      const data = parseJson(text);
-
-      if (!response.ok) {
-        logger.warn(
-          {
-            status: response.status,
-            piPaymentId: cleanPiPaymentId,
-            data,
-          },
-          "Pi payment approval failed",
-        );
-
-        res.status(502).json({
-          error:
-            "Pi payment approval failed",
-        });
-        return;
-      }
-
-      await db
-        .update(paymentsTable)
-        .set({
-          status: "approved",
-          providerPaymentId:
-            cleanPiPaymentId,
-        })
-        .where(
-          eq(
-            paymentsTable.id,
-            payment.id,
-          ),
-        );
-
-      res.json({
-        success: true,
-        status: "approved",
-        paymentId: payment.id,
-        piPaymentId:
-          cleanPiPaymentId,
-        data,
-      });
-    } catch (err) {
-      logger.error(
-        {
-          err,
-          piPaymentId: cleanPiPaymentId,
-        },
-        "Pi payment approval failed",
-      );
-
-      res.status(502).json({
-        error:
-          "Unable to approve Pi payment",
-      });
-    }
+  async (_req: Request, res: Response): Promise<void> => {
+    res.status(410).json({
+      error: "This legacy endpoint is disabled. Use /payments/pi/initiate for verified server-side approval.",
+    });
   },
 );
 
