@@ -190,6 +190,9 @@ export default function Admin() {
         <p className="mt-3 text-xs text-muted-foreground">
           Example: on a 100 Pi sale, a 5% commission is 5 Pi and the seller share is 95 Pi.
         </p>
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+          Accounting only: seller payouts and buyer refunds are not transferred automatically yet.
+        </p>
       </section>
 
       <section className="bg-card border border-border p-6 mb-8">
@@ -197,6 +200,9 @@ export default function Admin() {
           <div>
             <h2 className="text-lg font-medium tracking-tight">Dispute Review</h2>
             <p className="text-sm text-muted-foreground">Review buyer complaints for individual seller packages.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              Decisions are recorded only. No Pi payout or refund is sent by these controls.
+            </p>
           </div>
           <span className="text-sm font-mono">{disputedPackages.length} open</span>
         </div>
