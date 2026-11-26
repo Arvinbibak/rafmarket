@@ -564,6 +564,25 @@ router.post(
     let order: typeof ordersTable.$inferSelect | null;
     try {
       order = await db.transaction(async (tx) => {
+        // Claim the cart snapshot inside this transaction so two concurrent checkout
+        // requests cannot create duplicate orders from the same cart.
+        const claimedCart = await tx
+          .delete(cartItemsTable)
+          .where(eq(cartItemsTable.userId, req.user!.id))
+          .returning({
+            productId: cartItemsTable.productId,
+            quantity: cartItemsTable.quantity,
+          });
+        const expectedCartSnapshot = cartItems
+          .map((item) => `${item.productId}:${item.quantity}`)
+          .sort();
+        const claimedCartSnapshot = claimedCart
+          .map((item) => `${item.productId}:${item.quantity}`)
+          .sort();
+        if (JSON.stringify(claimedCartSnapshot) !== JSON.stringify(expectedCartSnapshot)) {
+          throw new Error("CART_CHANGED_DURING_CHECKOUT");
+        }
+
         // Reserve every product atomically with order creation. A concurrent checkout
         // cannot oversell stock, and any failed reservation rolls the whole transaction back.
         for (const item of items) {
@@ -635,6 +654,12 @@ router.post(
         });
         return;
       }
+      if (error instanceof Error && error.message === "CART_CHANGED_DURING_CHECKOUT") {
+        res.status(409).json({
+          error: "Your cart changed during checkout. Please refresh it and try again.",
+        });
+        return;
+      }
       throw error;
     }
 
@@ -644,19 +669,6 @@ router.post(
       });
       return;
     }
-
-    /* -----------------------------------------------------
-       Clear cart only after order creation and stock reservation.
-       ----------------------------------------------------- */
-
-    await db
-      .delete(cartItemsTable)
-      .where(
-        eq(
-          cartItemsTable.userId,
-          req.user!.id,
-        ),
-      );
 
     res.status(201).json(
       await toOrderWithSellerOrders(
