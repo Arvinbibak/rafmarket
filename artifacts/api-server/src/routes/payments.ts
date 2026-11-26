@@ -380,6 +380,11 @@ router.post(
       return;
     }
 
+    if (order.paymentMethod !== "pi" || order.currency !== "Pi") {
+      res.status(409).json({ error: "This order is not configured for Pi payment" });
+      return;
+    }
+
     const expectedAmount = Number(order.total);
     if (!Number.isFinite(expectedAmount) ||
         Math.abs(parsedAmount - expectedAmount) > 0.00000001) {
@@ -442,7 +447,42 @@ router.post(
         return;
       }
 
-      let payment = await findUserPayment(cleanPiPaymentId, req.user!.id);
+      const [existingOrderPayment] = await db
+        .select()
+        .from(paymentsTable)
+        .where(and(
+          eq(paymentsTable.orderId, order.id),
+          eq(paymentsTable.userId, req.user!.id),
+        ));
+
+      let payment: PaymentRecord | undefined;
+      if (existingOrderPayment) {
+        if (existingOrderPayment.providerPaymentId !== cleanPiPaymentId) {
+          if (existingOrderPayment.status !== "cancelled") {
+            res.status(409).json({ error: "This order already has a different payment attempt" });
+            return;
+          }
+
+          const [reused] = await db.update(paymentsTable)
+            .set({
+              method: "pi",
+              amount: String(expectedAmount),
+              currency: "Pi",
+              status: "pending",
+              providerPaymentId: cleanPiPaymentId,
+              providerReference: typeof piPayment.memo === "string" ? piPayment.memo : null,
+              paidAt: null,
+            })
+            .where(eq(paymentsTable.id, existingOrderPayment.id))
+            .returning();
+          payment = reused;
+        } else {
+          payment = existingOrderPayment;
+        }
+      } else {
+        payment = await findUserPayment(cleanPiPaymentId, req.user!.id);
+      }
+
       if (
         payment &&
         (
@@ -450,7 +490,8 @@ router.post(
           payment.method !== "pi" ||
           payment.providerPaymentId !== cleanPiPaymentId ||
           payment.currency !== "Pi" ||
-          Math.abs(Number(payment.amount) - expectedAmount) > 0.00000001
+          Math.abs(Number(payment.amount) - expectedAmount) > 0.00000001 ||
+          payment.status === "paid"
         )
       ) {
         res.status(409).json({ error: "Existing payment record does not match this Pi order" });
