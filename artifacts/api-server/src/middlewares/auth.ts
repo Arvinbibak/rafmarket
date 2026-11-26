@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 
 export interface AuthUser {
   id: number;
+  piUid?: string;
   piUsername: string;
   role: string;
 }
@@ -20,7 +21,11 @@ declare global {
 
 const JWT_SECRET =
   process.env["SESSION_SECRET"] ??
-  "rafmarket-secret-key";
+  (process.env.NODE_ENV === "production"
+    ? (() => {
+        throw new Error("SESSION_SECRET must be configured in production");
+      })()
+    : "rafmarket-local-development-only-secret");
 
 export function signToken(
   user: AuthUser,
@@ -82,6 +87,7 @@ export async function requireAuth(
 
     req.user = {
       id: user.id,
+      piUid: user.piUid,
       piUsername:
         user.piUsername,
       role: user.role,
