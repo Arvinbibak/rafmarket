@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 
 export interface AuthUser {
   id: number;
+  piUid?: string;
   piUsername: string;
   role: string;
 }
@@ -82,6 +83,7 @@ export async function requireAuth(
 
     req.user = {
       id: user.id,
+      piUid: user.piUid,
       piUsername:
         user.piUsername,
       role: user.role,
