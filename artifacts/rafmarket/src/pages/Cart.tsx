@@ -144,7 +144,17 @@ export default function Cart() {
 
     } catch (err) {
       console.error(err);
-      toast({ title: 'Checkout Error', description: 'Failed to initiate checkout.', variant: 'destructive' });
+      const errorData =
+        err && typeof err === 'object' && 'data' in err && err.data && typeof err.data === 'object'
+          ? err.data as Record<string, unknown>
+          : null;
+      const message =
+        typeof errorData?.error === 'string'
+          ? errorData.error
+          : err instanceof Error
+            ? err.message
+            : 'Failed to initiate checkout.';
+      toast({ title: 'Checkout Error', description: message, variant: 'destructive' });
       setIsProcessing(false);
       setPaymentStatus(null);
     }
