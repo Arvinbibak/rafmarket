@@ -3,10 +3,22 @@
   "rewrites": [
     {
       "source": "/api/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "^(rafmarket-mainnet-preview-arvinbibak|rafmarket-mainnet-web-git-mainnet-arvinbibaks-projects|rafmarket-mainnet-web-arvinbibaks-projects|rafmarket-mainnet-web|rafmarket-mainnet-arvinbibak)\\.vercel\\.app$"
+        }
+      ],
       "destination": "https://rafmarket-mainnet-api-preview-arvinbibak.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "^(rafmarket-mainnet-preview-arvinbibak|rafmarket-mainnet-web-git-mainnet-arvinbibaks-projects|rafmarket-mainnet-web-arvinbibaks-projects|rafmarket-mainnet-web|rafmarket-mainnet-arvinbibak)\\.vercel\\.app$"
+        }
+      ],
       "destination": "/index.html"
     }
   ]
