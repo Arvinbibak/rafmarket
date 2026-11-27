@@ -1,6 +1,6 @@
-// Dedicated Vercel Express entrypoint for the Mainnet API project.
+// Dedicated Vercel Express entrypoint for the Mainnet API.
 import express from "express";
-import app from "./src/app.ts";
+import app from "./dist/app.mjs";
 
 // Keep Express explicit so Vercel detects the framework.
 void express;
