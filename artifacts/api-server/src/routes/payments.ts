@@ -123,10 +123,12 @@ async function piFetch(
 }
 
 function getPiHeaders(): Record<string, string> {
-  const apiKey = process.env.PI_API_KEY;
+  // Support both the documented server key name and the existing Vercel variable.
+  const apiKey =
+    process.env.PI_API_KEY || process.env.PI_NETWORK_API_KEY;
 
   if (!apiKey) {
-    throw new Error("PI_API_KEY is not configured");
+    throw new Error("Pi Server API key is not configured");
   }
 
   return {
