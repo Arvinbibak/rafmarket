@@ -166,7 +166,7 @@ export default function Auth() {
           
           <div className="text-center">
             <p className="text-xs text-muted-foreground">
-              By connecting, you agree to our Terms of Service and Privacy Policy.
+              By connecting, you agree to our <a href="/terms" className="underline hover:text-primary">Terms of Service</a> and <a href="/privacy" className="underline hover:text-primary">Privacy Policy</a>.
             </p>
           </div>
         </div>
