@@ -1,6 +1,7 @@
 import { Link } from 'wouter';
+import type { ReactNode } from 'react';
 
-function LegalShell({ title, children }: { title: string; children: React.ReactNode }) {
+function LegalShell({ title, children }: { title: string; children: ReactNode }) {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-3xl px-6 py-12">
