@@ -14,10 +14,68 @@ import {
 } from "@workspace/db";
 
 import { eq, and, sql } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, requireAdmin } from "../middlewares/auth.js";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
+
+/* -------------------------------------------------------------------------- */
+/* GET /payments/pi/connection-check (server API key verification)            */
+/* Read-only check: asks Pi for the app's incomplete server payments.         */
+/* -------------------------------------------------------------------------- */
+
+router.get(
+  "/payments/pi/connection-check",
+  requireAuth,
+  requireAdmin,
+  async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const response = await piFetch(
+        `${PI_API_BASE}/payments/incomplete_server_payments`,
+        {
+          method: "GET",
+          headers: getPiHeaders(),
+          signal: AbortSignal.timeout(10000),
+        },
+      );
+
+      if (!response.ok) {
+        logger.warn(
+          { status: response.status },
+          "Pi Server API key diagnostic request was rejected",
+        );
+        res.status(502).json({
+          success: false,
+          connected: false,
+          error:
+            response.status === 401 || response.status === 403
+              ? "Pi rejected the Server API key"
+              : `Pi API returned HTTP ${response.status}`,
+        });
+        return;
+      }
+
+      // Do not return payment records or any credential-related data to the client.
+      await response.text();
+      res.json({
+        success: true,
+        connected: true,
+        message: "Pi accepted the Server API key",
+      });
+    } catch (err) {
+      logger.error(
+        { err },
+        "Pi Server API key diagnostic request failed",
+      );
+      res.status(502).json({
+        success: false,
+        connected: false,
+        error: "Could not reach the Pi Platform API",
+      });
+    }
+  },
+);
+
 
 type PaymentMethod = "pi" | "irr";
 
