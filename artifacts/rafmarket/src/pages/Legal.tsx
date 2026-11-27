@@ -35,7 +35,7 @@ export function PrivacyPolicy() {
       <h2>8. Changes</h2>
       <p>We may update this policy as RAFMARKET develops. The current version will be published at this URL with its effective date.</p>
       <h2>9. Contact</h2>
-      <p>For privacy questions, use the official RAFMARKET support contact shown in the Pi app listing. A public support contact must be provided before the app is submitted for public listing.</p>
+      <p>Before public listing, RAFMARKET will publish a monitored support contact for privacy questions and user requests. Do not send wallet passphrases or private keys to support.</p>
     </LegalShell>
   );
 }
@@ -45,8 +45,8 @@ export function TermsOfService() {
     <LegalShell title="Terms of Service">
       <h2>1. About RAFMARKET</h2>
       <p>RAFMARKET provides marketplace software that helps users discover listings, communicate transaction information, and manage buyer and seller orders. Users are responsible for the accuracy and legality of their listings and for complying with applicable laws.</p>
-      <h2>2. Pi Network test environment</h2>
-      <p>The current RAFMARKET application is configured for Pi Network Testnet. Test Pi is for testing and has no monetary value. Do not treat Testnet activity as a real-money purchase or transfer. Mainnet availability will be announced only after the application is approved and configured for it.</p>
+      <h2>2. Pi Network and transaction environment</h2>
+      <p>This RAFMARKET instance is intended for the Pi Mainnet. Mainnet Pi may have real economic value. Do not assume an order is paid unless RAFMARKET displays a server-verified payment status. Testnet Pi, when used in a separate test environment, has no monetary value.</p>
       <h2>3. Accounts and acceptable use</h2>
       <p>You must use an account you control, provide accurate information, protect your sign-in session, and not misuse the application, interfere with its operation, post unlawful or misleading listings, or attempt to defraud other users.</p>
       <h2>4. Listings and transactions</h2>
@@ -62,7 +62,7 @@ export function TermsOfService() {
       <h2>9. Limitation and responsibility</h2>
       <p>To the extent permitted by applicable law, RAFMARKET is provided on an as-available basis. Nothing in these terms excludes rights or remedies that cannot legally be excluded. Users remain responsible for their dealings with other users and for complying with applicable laws.</p>
       <h2>10. Changes and contact</h2>
-      <p>These terms may be updated as the service develops. The current version will be published at this URL. For questions, use the official RAFMARKET support contact shown in the Pi app listing; a public support contact must be provided before public listing.</p>
+      <p>These terms may be updated as the service develops. Before public listing, RAFMARKET will publish a monitored support contact for user questions and requests.</p>
     </LegalShell>
   );
 }
