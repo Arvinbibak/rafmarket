@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://rafmarket-mainnet-api-arvinbibak.vercel.app/api/:path*"
+      "destination": "https://rafmarket-mainnet-api-preview-arvinbibak.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
