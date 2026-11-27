@@ -17,6 +17,8 @@ export default function Admin() {
   const [disputesLoading, setDisputesLoading] = useState(true);
   const [disputeActionId, setDisputeActionId] = useState<number | null>(null);
   const [disputeMessage, setDisputeMessage] = useState('');
+  const [piConnectionLoading, setPiConnectionLoading] = useState(false);
+  const [piConnectionMessage, setPiConnectionMessage] = useState('');
 
   const { data: stats, isLoading: isStatsLoading } = useGetAdminStats({
     query: { queryKey: getGetAdminStatsQueryKey(), enabled: user?.role === 'admin' }
@@ -75,6 +77,32 @@ export default function Admin() {
       .catch((error: Error) => setDisputeMessage(error.message))
       .finally(() => setDisputesLoading(false));
   }, [user?.role]);
+
+
+  const checkPiConnection = async () => {
+    const token = localStorage.getItem('raf_token');
+    if (!token) {
+      setPiConnectionMessage('Admin session not found. Please sign in again.');
+      return;
+    }
+
+    setPiConnectionLoading(true);
+    setPiConnectionMessage('');
+    try {
+      const response = await fetch('/api/payments/pi/connection-check', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.connected) {
+        throw new Error(data.error || 'Pi API key verification failed.');
+      }
+      setPiConnectionMessage('Connected: Pi accepted the Server API key. No payment was created or changed.');
+    } catch (error) {
+      setPiConnectionMessage(error instanceof Error ? error.message : 'Could not verify the Pi API connection.');
+    } finally {
+      setPiConnectionLoading(false);
+    }
+  };
 
   const resolveDispute = async (id: number, resolution: 'release_to_seller' | 'refund_to_buyer') => {
     const token = localStorage.getItem('raf_token');
@@ -193,6 +221,32 @@ export default function Admin() {
         <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
           Accounting only: seller payouts and buyer refunds are not transferred automatically yet.
         </p>
+      </section>
+
+
+      <section className="bg-card border border-border p-6 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium tracking-tight mb-1">Pi Server API Connection</h2>
+            <p className="text-sm text-muted-foreground">
+              Run a read-only request to confirm that Pi accepts the server API key.
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              This check does not create, approve, complete, or cancel a payment.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={checkPiConnection}
+            disabled={piConnectionLoading}
+            className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+          >
+            {piConnectionLoading ? 'Checking...' : 'Check Pi connection'}
+          </button>
+        </div>
+        {piConnectionMessage && (
+          <p className="mt-3 text-sm text-muted-foreground" role="status">{piConnectionMessage}</p>
+        )}
       </section>
 
       <section className="bg-card border border-border p-6 mb-8">
