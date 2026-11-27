@@ -16,6 +16,7 @@ import Admin from '@/pages/Admin';
 import SellerOrders from '@/pages/SellerOrders';
 import SellerProducts from '@/pages/SellerProducts';
 import NotFound from '@/pages/not-found';
+import { PrivacyPolicy, TermsOfService } from '@/pages/Legal';
 
 const queryClient = new QueryClient();
 
@@ -23,6 +24,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/auth" component={Auth} />
+      <Route path="/privacy" component={PrivacyPolicy} />
+      <Route path="/terms" component={TermsOfService} />
       
       {/* Routes that use the MainLayout */}
       <Route>
