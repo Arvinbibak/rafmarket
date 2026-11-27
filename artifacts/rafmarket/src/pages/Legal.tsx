@@ -35,7 +35,7 @@ export function PrivacyPolicy() {
       <h2>8. Changes</h2>
       <p>We may update this policy as RAFMARKET develops. The current version will be published at this URL with its effective date.</p>
       <h2>9. Contact</h2>
-      <p>Before public listing, RAFMARKET will publish a monitored support contact for privacy questions and user requests. Do not send wallet passphrases or private keys to support.</p>
+      <p>For privacy questions or requests about personal information, contact RAFMARKET at Arvinbibak@gmail.com. Do not send wallet passphrases, private keys, or recovery phrases by email.</p>
     </LegalShell>
   );
 }
@@ -62,7 +62,7 @@ export function TermsOfService() {
       <h2>9. Limitation and responsibility</h2>
       <p>To the extent permitted by applicable law, RAFMARKET is provided on an as-available basis. Nothing in these terms excludes rights or remedies that cannot legally be excluded. Users remain responsible for their dealings with other users and for complying with applicable laws.</p>
       <h2>10. Changes and contact</h2>
-      <p>These terms may be updated as the service develops. Before public listing, RAFMARKET will publish a monitored support contact for user questions and requests.</p>
+      <p>These terms may be updated as the service develops. For questions about these terms or the service, contact RAFMARKET at Arvinbibak@gmail.com. Do not send wallet passphrases, private keys, or recovery phrases by email.</p>
     </LegalShell>
   );
 }
