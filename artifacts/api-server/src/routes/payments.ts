@@ -20,7 +20,7 @@ import { logger } from "../lib/logger.js";
 const router: IRouter = Router();
 
 /* -------------------------------------------------------------------------- */
-/* GET /payments/pi/connection-check                                          */
+/* GET /payments/pi/connection-check (server API key verification)            */
 /* Read-only check: asks Pi for the app's incomplete server payments.         */
 /* -------------------------------------------------------------------------- */
 
