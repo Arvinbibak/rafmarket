@@ -27,8 +27,8 @@ export default function Auth() {
         throw new Error('Pi SDK not loaded');
       }
 
-      // Initialize the Pi SDK in Testnet Sandbox before authentication.
-      await window.Pi.init({ version: '2.0', sandbox: true });
+      // Initialize the Pi SDK for the isolated Pi Mainnet application.
+      await window.Pi.init({ version: '2.0', sandbox: false });
 
       // 1. Authenticate with Pi SDK and capture any interrupted payment.
       const scopes = ['username', 'payments'];
