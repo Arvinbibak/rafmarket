@@ -6,6 +6,16 @@
       "has": [
         {
           "type": "host",
+          "value": "^raf\\.pi$"
+        }
+      ],
+      "destination": "https://rafmarket-mainnet-api-arvinbibak.vercel.app/api/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "has": [
+        {
+          "type": "host",
           "value": "^(rafmarket-mainnet-preview-arvinbibak|rafmarket-mainnet-web-git-mainnet-arvinbibaks-projects|rafmarket-mainnet-web-arvinbibaks-projects|rafmarket-mainnet-web|rafmarket-mainnet-arvinbibak)\\.vercel\\.app$"
         }
       ],
@@ -17,6 +27,16 @@
         {
           "type": "host",
           "value": "^(rafmarket-mainnet-preview-arvinbibak|rafmarket-mainnet-web-git-mainnet-arvinbibaks-projects|rafmarket-mainnet-web-arvinbibaks-projects|rafmarket-mainnet-web|rafmarket-mainnet-arvinbibak)\\.vercel\\.app$"
+        }
+      ],
+      "destination": "/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "^raf\\.pi$"
         }
       ],
       "destination": "/index.html"
